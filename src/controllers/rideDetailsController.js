@@ -21,7 +21,7 @@ export const findAvailableDrivers = asyncHandler(async (req, res) => {
   const proximityRadius = 5; // Search radius in kilometers
 
   // ---- Fare Settings ----
-  const baseFare = 20; // Base fare for the ride
+  const baseFare = 20; // Base fare for the ride hello
   const perKmCharge = 8; // Charge per kilometer
   const adminProfitPercentage = 18; // Admin's profit percentage - CHANGED TO 18%
 
