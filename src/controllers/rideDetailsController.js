@@ -22,8 +22,8 @@ export const findAvailableDrivers = asyncHandler(async (req, res) => {
 
   // ---- Fare Settings ----
   const baseFare = 20; // Base fare for the ride
-  const perKmCharge = 8; // Charge per kilometer (10 km = ₹100 total fare with baseFare)
-  const adminProfitPercentage = 18; // Admin's profit percentage
+  const perKmCharge = 8; // Charge per kilometer
+  const adminProfitPercentage = 18; // Admin's profit percentage - CHANGED TO 18%
 
   // ---- Speed Settings ----
   const minSpeed = 20; // km/h (worst case in traffic)
@@ -110,7 +110,7 @@ export const findAvailableDrivers = asyncHandler(async (req, res) => {
         // Fare Calculation
         const totalPrice = Math.ceil(baseFare + totalDistance * perKmCharge);
 
-        // Profit Calculation
+        // Profit Calculation - USING 18% FOR ADMIN
         const adminProfit = Math.ceil(
           (adminProfitPercentage / 100) * totalPrice
         );
@@ -232,7 +232,7 @@ export const acceptRide = (io) =>
 
       // Calculate admin and driver profits based on the total price
       // const adminPercentage = process.env.ADMIN_PERCENTAGE; // Admin percentage
-      const adminPercentage = 24; // Admin percentage
+      const adminPercentage = 18; // Admin percentage
       const adminAmount = Math.ceil((adminPercentage / 100) * totalPrice);
       const driverProfit = Math.ceil(totalPrice - adminAmount);
 
