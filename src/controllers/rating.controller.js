@@ -1,5 +1,5 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
-import ApiResponse from "../utils/apiResponse.js";
+import ApiResponse from "../utils/ApiResponse.js";
 import { Rating } from "../models/rating.model.js";
 import { ObjectId } from "mongoose";
 import mongoose from "mongoose";

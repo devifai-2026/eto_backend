@@ -1,7 +1,7 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { Rider } from "../models/rider.model.js";
 import { RideDetails } from "../models/rideDetails.model.js";
-import ApiResponse from "../utils/apiResponse.js";
+import ApiResponse from "../utils/ApiResponse.js";
 import { Driver } from "../models/driver.model.js";
 import { ETOCard } from "../models/eto.model.js";
 import { User } from "../models/user.model.js";
