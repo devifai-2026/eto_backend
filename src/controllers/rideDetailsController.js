@@ -26,7 +26,7 @@ export const findAvailableDrivers = asyncHandler(async (req, res) => {
   const adminProfitPercentage = 18; // Admin's profit percentage - CHANGED TO 18%
 
   // ---- Speed Settings ----
-  const minSpeed = 20; // km/h (worst case in traffic)
+  const minSpeed = 18; // km/h (worst case in traffic)
   const maxSpeed = 30; // km/h (best case in traffic)
 
   if (!riderId || !pickUpLocation || !dropLocation) {
