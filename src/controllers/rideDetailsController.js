@@ -8,7 +8,7 @@ import geolib from "geolib";
 import dotenv from "dotenv";
 import { Admin } from "../models/admin.model.js";
 import { Khata } from "../models/khata.model.js";
-import ApiResponse from "../utils/apiResponse.js";
+import ApiResponse from "../utils/ApiResponse.js";
 import { ETOCard } from "../models/eto.model.js";
 
 dotenv.config({

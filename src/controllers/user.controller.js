@@ -8,7 +8,7 @@ import {
   validateOtpViaMessageCentral,
 } from "../utils/sentOtp.js";
 import { Admin } from "../models/admin.model.js";
-import ApiResponse from "../utils/apiResponse.js";
+import ApiResponse from "../utils/ApiResponse.js";
 
 // Generate Access and Refresh Tokens
 const generateAccessAndRefreshToken = async (userId) => {
