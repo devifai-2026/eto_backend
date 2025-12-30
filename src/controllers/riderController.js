@@ -95,24 +95,39 @@ export const getCurrentRide = asyncHandler(async (req, res) => {
         .status(404)
         .json(new ApiResponse(404, null, "Ride details not found"));
     }
+    
+    // Get driver details WITH current_location included
     const driverUserDetails = await Driver.findOne({
       phone: currentRide?.driverNumber,
-    });
+    }).select("name phone driver_photo current_location isActive lastSeen"); // Explicitly select fields including current_location
+
     const etoDetails = await ETOCard.findOne({
       driverId: currentRide?.driverId,
     });
 
+    // Prepare response with proper structure
     const rideAndDriverDetails = {
       ...currentRide.toObject(),
-      driverUserDetails,
+      driverUserDetails: {
+        ...driverUserDetails?.toObject(),
+        // Transform current_location to match pickup/drop format if needed
+        driverLocation: driverUserDetails?.current_location ? {
+          type: driverUserDetails.current_location.type,
+          coordinates: driverUserDetails.current_location.coordinates
+        } : null
+      },
       etoDetails: {
         helpLine_num: etoDetails?.helpLine_num,
         eto_id_num: etoDetails?.eto_id_num,
       },
+      // Also include driver_location separately for backward compatibility
+      driver_location: driverUserDetails?.current_location ? {
+        type: driverUserDetails.current_location.type,
+        coordinates: driverUserDetails.current_location.coordinates
+      } : null
     };
 
-
-    // console.log("Rider Current Ride", currentRide);
+    // console.log("Rider Current Ride", rideAndDriverDetails);
     return res
       .status(200)
       .json(
