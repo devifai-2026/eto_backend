@@ -7,6 +7,11 @@ const driverSchema = new Schema(
       ref: "User",
       required: true,
     },
+    franchiseId: {
+      type: Schema.Types.ObjectId,
+      ref: "Franchise",
+      default: null,
+    },
     phone: {
       type: String,
       required: [true, "Phone number is required"],
@@ -158,6 +163,10 @@ const driverSchema = new Schema(
       type: String,
       default: "",
     },
+    hasDueRequest: {
+      type: Boolean,
+      default: false
+    }
   },
   {
     timestamps: true,

@@ -12,13 +12,22 @@ const khataSchema = new Schema(
       ref: "Admin",
       required: true,
     },
+    franchiseId: {
+      type: Schema.Types.ObjectId,
+      ref: "Franchise",
+      default: null, // Will be null for non-franchise drivers
+    },
     driverdue: {
       type: Number,
-      default: 0, // Money owed by the driver
+      default: 0,
     },
     admindue: {
       type: Number,
-      default: 0, // Money owed by the admin
+      default: 0,
+    },
+    franchisedue: {
+      type: Number,
+      default: 0, // Money owed to franchise
     },
     due_payment_details: [
       {
@@ -30,7 +39,8 @@ const khataSchema = new Schema(
         rideId: {
           type: Schema.Types.ObjectId,
           ref: "Ride",
-          required: [true, "Ride ID is required"],
+          default: null,
+          // required: [true, "Ride ID is required"],
         },
         total_price: {
           type: Number,
@@ -40,6 +50,10 @@ const khataSchema = new Schema(
         admin_profit: {
           type: Number,
           default: 0,
+        },
+        franchise_profit: {
+          type: Number,
+          default: 0, // Will be 0 for non-franchise drivers
         },
         driver_profit: {
           type: Number,
@@ -57,7 +71,7 @@ const khataSchema = new Schema(
     ],
   },
   {
-    timestamps: true, // Automatically adds createdAt and updatedAt fields
+    timestamps: true,
   }
 );
 

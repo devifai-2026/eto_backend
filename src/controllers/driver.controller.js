@@ -4,7 +4,6 @@ import { User } from "../models/user.model.js";
 import { RideDetails } from "../models/rideDetails.model.js";
 import { ETOCard } from "../models/eto.model.js";
 import { WithdrawalLogs } from "../models/withdrawlLogs.model.js";
-import { ApiError } from "../utils/apiError.js";
 import { getCurrTime } from "../utils/getCurrTime.js";
 import { getCurrentLocalDate } from "../utils/getCurrentLocalDate.js";
 import { mongoose } from "mongoose";
@@ -13,15 +12,20 @@ import { generateRandom3DigitNumber } from "../utils/otpGenerate.js";
 import { Khata } from "../models/khata.model.js";
 import ApiResponse from "../utils/ApiResponse.js";
 import geolib from "geolib";
+import { Franchise } from "../models/franchise.model.js";
+import { Admin } from "./../models/admin.model.js";
+import { FranchiseCommissionSettings } from "../models/commissionSettings.model.js";
 
 // Create Driver Function
 export const createDriver = asyncHandler(async (req, res) => {
-  const { phone } = req.body;
+  const { phone, pin_code } = req.body;
 
-  if (!phone) {
+  if (!phone || !pin_code) {
     return res
       .status(400)
-      .json(new ApiResponse(400, null, "Phone number is required"));
+      .json(
+        new ApiResponse(400, null, "Phone number and pin code are required")
+      );
   }
 
   try {
@@ -45,6 +49,22 @@ export const createDriver = asyncHandler(async (req, res) => {
         .json(new ApiResponse(200, null, "Driver already exists"));
     }
 
+    // Check if this pincode is accessible by any franchise
+    let franchiseId = null;
+    const franchise = await Franchise.findOne({
+      "accessible_pincodes.pincode": pin_code,
+      "accessible_pincodes.isActive": true,
+      isActive: true,
+      isApproved: true,
+    });
+
+    if (franchise) {
+      franchiseId = franchise._id;
+      console.log(
+        `Driver assigned to franchise: ${franchise.name} for pincode: ${pin_code}`
+      );
+    }
+
     // Generate a unique 3-digit `eto_id_num`
     let eto_id_num;
     let isUnique = false;
@@ -61,6 +81,7 @@ export const createDriver = asyncHandler(async (req, res) => {
     const driverData = {
       ...req.body,
       userId: existsUser._id,
+      franchiseId: franchiseId, // Assign franchise if found
       current_location: {
         type: "Point",
         coordinates: req.body.current_location?.coordinates?.every(
@@ -97,15 +118,23 @@ export const createDriver = asyncHandler(async (req, res) => {
     const newETOCard = new ETOCard(etoCardData);
     const savedETOCard = await newETOCard.save();
 
-    return res
-      .status(201)
-      .json(
-        new ApiResponse(
-          201,
-          { driver: savedDriver, etoCard: savedETOCard },
-          "Driver and ETOCard created successfully"
-        )
-      );
+    return res.status(201).json(
+      new ApiResponse(
+        201,
+        {
+          driver: savedDriver,
+          etoCard: savedETOCard,
+          franchiseAssigned: !!franchiseId,
+          franchiseName: franchise ? franchise.name : null,
+          needsApprovalFrom: franchiseId ? "franchise" : "admin",
+        },
+        `Driver created successfully. ${
+          franchiseId
+            ? `Assigned to franchise: ${franchise.name}. Waiting for franchise approval.`
+            : "Not assigned to any franchise. Waiting for admin approval."
+        }`
+      )
+    );
   } catch (error) {
     console.error("Error creating driver:", error.message);
     return res
@@ -117,66 +146,286 @@ export const createDriver = asyncHandler(async (req, res) => {
 // Get All Drivers Function
 export const getAllDrivers = asyncHandler(async (req, res) => {
   try {
-    const drivers = await Driver.find();
+    // Extract and validate query parameters
+    const { 
+      adminId, 
+      franchiseId, 
+      search, 
+      isActive, 
+      isOnRide,
+      page = '1', 
+      limit = '20',
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
 
-    // Get ETO card details for each driver
-    const driversWithETOCards = await Promise.all(
-      drivers.map(async (driver) => {
-        const etoCard = await ETOCard.findOne({ driverId: driver._id });
-        return {
-          ...driver.toObject(),
-          etoCard: etoCard || null,
-        };
-      })
-    );
+    // Validate and parse pagination parameters
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit) || 20));
+
+    // Validate sort parameters
+    const validSortFields = ['createdAt', 'name', 'total_earning', 'total_complete_rides'];
+    const isValidSortField = validSortFields.includes(sortBy);
+    const finalSortBy = isValidSortField ? sortBy : 'createdAt';
+    
+    const isValidSortOrder = ['asc', 'desc'].includes(sortOrder.toLowerCase());
+    const finalSortOrder = isValidSortOrder ? sortOrder.toLowerCase() : 'desc';
+
+    // Build query object
+    const baseQuery = {};
+
+    // Admin/Franchise access control
+    let appliedFranchiseId = null;
+    
+    if (franchiseId) {
+      if (!mongoose.Types.ObjectId.isValid(franchiseId)) {
+        return res.status(400).json(
+          new ApiResponse(400, null, "Invalid franchise ID format")
+        );
+      }
+      
+      // Only apply franchise filter if adminId is NOT provided
+      if (!adminId) {
+        baseQuery.franchiseId = franchiseId;
+        appliedFranchiseId = franchiseId;
+      }
+    }
+
+    // Search functionality
+    if (search && search.trim() !== '') {
+      const searchTerm = search.trim();
+      const searchRegex = new RegExp(searchTerm, 'i');
+      
+      baseQuery.$or = [
+        { name: { $regex: searchRegex } },
+        { phone: { $regex: searchRegex } },
+        { email: { $regex: searchRegex } },
+        { license_number: { $regex: searchRegex } }
+      ];
+    }
+
+    // Boolean filters
+    if (isActive !== undefined) {
+      if (isActive === 'true' || isActive === 'false') {
+        baseQuery.isActive = isActive === 'true';
+      } else {
+        return res.status(400).json(
+          new ApiResponse(400, null, "isActive must be 'true' or 'false'")
+        );
+      }
+    }
+
+    if (isOnRide !== undefined) {
+      if (isOnRide === 'true' || isOnRide === 'false') {
+        baseQuery.is_on_ride = isOnRide === 'true';
+      } else {
+        return res.status(400).json(
+          new ApiResponse(400, null, "isOnRide must be 'true' or 'false'")
+        );
+      }
+    }
+
+    // Calculate skip for pagination
+    const skip = (pageNum - 1) * limitNum;
+
+    // Configure sorting
+    const sortOptions = {};
+    sortOptions[finalSortBy] = finalSortOrder === 'desc' ? -1 : 1;
+
+    // ====================
+    // GET SUMMARY STATISTICS
+    // ====================
+    let summaryStats = {
+      totalDrivers: 0,
+      totalActiveDrivers: 0,
+      totalEarnings: 0,
+      totalRides: 0
+    };
+
+    // Get total drivers count
+    summaryStats.totalDrivers = await Driver.countDocuments(baseQuery);
+
+    // Get active drivers count
+    const activeQuery = { ...baseQuery, isActive: true };
+    summaryStats.totalActiveDrivers = await Driver.countDocuments(activeQuery);
+
+    // Get driver IDs for earnings and rides calculation
+    const driversForStats = await Driver.find(baseQuery).select('_id').lean();
+    const driverIds = driversForStats.map(driver => driver._id);
+
+    if (driverIds.length > 0) {
+      // Get total earnings and rides from RideDetails
+      const statsAggregation = await RideDetails.aggregate([
+        {
+          $match: {
+            driverId: { $in: driverIds },
+            isRide_ended: true
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalEarnings: { $sum: "$driver_profit" },
+            totalRides: { $sum: 1 }
+          }
+        }
+      ]);
+
+      if (statsAggregation.length > 0) {
+        summaryStats.totalEarnings = Math.ceil(statsAggregation[0].totalEarnings);
+        summaryStats.totalRides = statsAggregation[0].totalRides;
+      }
+    }
+
+    // ====================
+    // GET PAGINATED DRIVERS
+    // ====================
+    // Get total count for pagination
+    const totalDrivers = summaryStats.totalDrivers;
+    const totalPages = Math.ceil(totalDrivers / limitNum);
+
+    // If no drivers found, return early with summary
+    if (totalDrivers === 0) {
+      return res.status(200).json(
+        new ApiResponse(
+          200,
+          {
+            summary: summaryStats,
+            drivers: [],
+            pagination: {
+              total: totalDrivers,
+              page: pageNum,
+              limit: limitNum,
+              totalPages,
+              hasNext: false,
+              hasPrev: false
+            },
+            filters: {
+              search: search || null,
+              isActive: isActive || null,
+              isOnRide: isOnRide || null,
+              franchiseId: appliedFranchiseId,
+              adminId: adminId || null,
+              sortBy: finalSortBy,
+              sortOrder: finalSortOrder
+            }
+          },
+          "No drivers found matching the criteria"
+        )
+      );
+    }
+
+    // Execute query with pagination - select only needed fields
+    const drivers = await Driver.find(baseQuery)
+      .select('_id name phone email createdAt isActive is_on_ride total_earning total_complete_rides userId')
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    // Get ETO card numbers for these drivers
+    const etoCards = await ETOCard.find({ 
+      driverId: { $in: drivers.map(d => d._id) } 
+    })
+    .select('driverId eto_id_num')
+    .lean();
+
+    // Create ETO card map
+    const etoCardMap = {};
+    etoCards.forEach(card => {
+      etoCardMap[card.driverId.toString()] = card.eto_id_num;
+    });
+
+    // Format drivers for response
+    const formattedDrivers = drivers.map(driver => {
+      return {
+        id: driver._id,
+        userId: driver.userId,
+        name: driver.name,
+        joinedDate: driver.createdAt.toISOString().split('T')[0], // YYYY-MM-DD format
+        contact: {
+          phone: driver.phone,
+          email: driver.email
+        },
+        etoIdNumber: etoCardMap[driver._id.toString()] || 'N/A',
+        status: driver.isActive ? 'Active' : 'Inactive',
+        totalEarnings: Math.ceil(driver.total_earning || 0),
+        totalRides: driver.total_complete_rides || 0,
+        isOnRide: driver.is_on_ride || false,
+        // Additional quick status
+        availability: driver.isActive 
+          ? (driver.is_on_ride ? 'On Ride' : 'Available') 
+          : 'Offline'
+      };
+    });
+
+    // ====================
+    // FORMAT RESPONSE
+    // ====================
+    // Generate response message
+    let message = "Drivers retrieved successfully";
+    
+    if (appliedFranchiseId) {
+      const franchise = await Franchise.findById(appliedFranchiseId).select('name').lean();
+      message = `Franchise "${franchise?.name || appliedFranchiseId}" drivers retrieved`;
+    } else if (adminId) {
+      message = "All drivers retrieved (Admin view)";
+    }
+    
+    if (search) {
+      message += `, searched for: "${search}"`;
+    }
+
+    // Prepare response
+    const responseData = {
+      summary: {
+        ...summaryStats,
+        totalInactiveDrivers: summaryStats.totalDrivers - summaryStats.totalActiveDrivers,
+        avgEarningsPerDriver: summaryStats.totalDrivers > 0 
+          ? Math.ceil(summaryStats.totalEarnings / summaryStats.totalDrivers) 
+          : 0,
+        avgRidesPerDriver: summaryStats.totalDrivers > 0 
+          ? Math.ceil(summaryStats.totalRides / summaryStats.totalDrivers) 
+          : 0
+      },
+      drivers: formattedDrivers,
+      pagination: {
+        total: totalDrivers,
+        page: pageNum,
+        limit: limitNum,
+        totalPages,
+        hasNext: pageNum < totalPages,
+        hasPrev: pageNum > 1
+      },
+      filters: {
+        search: search || null,
+        isActive: isActive || null,
+        isOnRide: isOnRide || null,
+        franchiseId: appliedFranchiseId,
+        adminId: adminId || null,
+        sortBy: finalSortBy,
+        sortOrder: finalSortOrder
+      }
+    };
 
     return res.status(200).json(
-      new ApiResponse(
-        200,
-        {
-          drivers: driversWithETOCards,
-          count: drivers.length,
-        },
-        "Drivers retrieved successfully with ETO card details"
-      )
+      new ApiResponse(200, responseData, message)
     );
+
   } catch (error) {
-    console.error("Error retrieving drivers:", error.message);
-    return res
-      .status(500)
-      .json(new ApiResponse(500, null, "Failed to retrieve drivers"));
+    console.error("Error in getAllDrivers:", {
+      message: error.message,
+      stack: error.stack,
+      query: req.query
+    });
+    
+    return res.status(500).json(
+      new ApiResponse(500, null, "An error occurred while retrieving drivers")
+    );
   }
 });
 
-// // Get Driver by ID Function
-// export const getDriverById = asyncHandler(async (req, res) => {
-//   const { id } = req.params;
-
-//   if (!id) {
-//     return res
-//       .status(400)
-//       .json(new ApiResponse(400, null, "Driver ID is required"));
-//   }
-
-//   try {
-//     const driver = await Driver.findOne({ userId: id });
-//     if (!driver) {
-//       return res
-//         .status(404)
-//         .json(new ApiResponse(404, null, "Driver not found"));
-//     }
-
-//     return res
-//       .status(200)
-//       .json(new ApiResponse(200, driver, "Driver retrieved successfully"));
-//   } catch (error) {
-//     console.error("Error retrieving driver:", error.message);
-//     return res
-//       .status(500)
-//       .json(new ApiResponse(500, null, "Failed to retrieve driver"));
-//   }
-// });
-
+// Get Driver by ID Function
 export const getDriverById = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
@@ -828,6 +1077,7 @@ export const getTotalEarningByDate = asyncHandler(async (req, res) => {
       .json(new ApiResponse(500, null, "Failed to fetch earnings by date"));
   }
 });
+
 // Get Recent rides
 export const getRecentRides = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -1113,63 +1363,255 @@ export const getTopDrivers = asyncHandler(async (req, res) => {
 // Get all drivers with isApproved = false
 export const getUnapprovedDrivers = asyncHandler(async (req, res) => {
   try {
-    // Find drivers where isApproved is false
-    const unapprovedDrivers = await Driver.find({ isApproved: false });
+    const { adminId, franchiseId } = req.query;
+
+    // Validate IDs
+    if (adminId && !mongoose.Types.ObjectId.isValid(adminId)) {
+      return res.status(400).json(
+        new ApiResponse(400, null, "Invalid admin ID format")
+      );
+    }
+
+    if (franchiseId && !mongoose.Types.ObjectId.isValid(franchiseId)) {
+      return res.status(400).json(
+        new ApiResponse(400, null, "Invalid franchise ID format")
+      );
+    }
+
+    // Build query object
+    const query = { isApproved: false };
+
+    // Apply franchise filter if franchiseId is provided
+    if (franchiseId) {
+      // Only show drivers assigned to this specific franchise
+      query.franchiseId = franchiseId;
+      
+      // Optionally verify franchise exists
+      const franchise = await Franchise.findById(franchiseId);
+      if (!franchise) {
+        return res.status(404).json(
+          new ApiResponse(404, null, "Franchise not found")
+        );
+      }
+    } else if (adminId) {
+      // Admin can see all unapproved drivers (both with and without franchise)
+      // No franchise filter applied
+      
+      // Optionally verify admin exists
+      const admin = await Admin.findById(adminId);
+      if (!admin) {
+        return res.status(404).json(
+          new ApiResponse(404, null, "Admin not found")
+        );
+      }
+    } else {
+      // If neither adminId nor franchiseId is provided, return error
+      return res.status(400).json(
+        new ApiResponse(400, null, "Either adminId or franchiseId is required")
+      );
+    }
+
+    // Find unapproved drivers with optional population
+    const unapprovedDrivers = await Driver.find(query)
+      .populate({
+        path: 'franchiseId',
+        select: 'name email phone'
+      })
+      .sort({ createdAt: -1 }); // Sort by newest first
 
     if (unapprovedDrivers.length === 0) {
-      return res
-        .status(200)
-        .json(new ApiResponse(200, null, "No unapproved drivers found"));
+      const message = franchiseId 
+        ? "No unapproved drivers found for this franchise"
+        : "No unapproved drivers found";
+      
+      return res.status(200).json(
+        new ApiResponse(200, { drivers: [], count: 0 }, message)
+      );
+    }
+
+    // Format response data
+    const formattedDrivers = unapprovedDrivers.map(driver => ({
+      _id: driver._id,
+      userId: driver.userId,
+      name: driver.name,
+      phone: driver.phone,
+      email: driver.email,
+      license_number: driver.license_number,
+      pin_code: driver.pin_code,
+      car_photo: driver.car_photo,
+      village: driver.village,
+      police_station: driver.police_station,
+      landmark: driver.landmark,
+      post_office: driver.post_office,
+      district: driver.district,
+      driver_photo: driver.driver_photo,
+      aadhar_front_photo: driver.aadhar_front_photo,
+      aadhar_back_photo: driver.aadhar_back_photo,
+      
+      isActive: driver.isActive,
+      createdAt: driver.createdAt,
+      franchise: driver.franchiseId ? {
+        _id: driver.franchiseId._id,
+        name: driver.franchiseId.name,
+        email: driver.franchiseId.email,
+        phone: driver.franchiseId.phone
+      } : null,
+      rejectionReason: driver.rejectionReason || ''
+    }));
+
+    // Determine response message
+    let message = "Unapproved drivers fetched successfully";
+    if (franchiseId && unapprovedDrivers[0]?.franchiseId) {
+      message = `Unapproved drivers for franchise "${unapprovedDrivers[0].franchiseId.name}" fetched successfully`;
+    } else if (adminId) {
+      message = "All unapproved drivers fetched (Admin view)";
     }
 
     return res.status(200).json(
       new ApiResponse(
         200,
         {
-          drivers: unapprovedDrivers,
-          count: unapprovedDrivers.length, // Send the length of unapproved drivers
+          drivers: formattedDrivers,
+          count: unapprovedDrivers.length,
+          filters: {
+            franchiseId: franchiseId || null,
+            adminId: adminId || null
+          }
         },
-        "Unapproved drivers fetched successfully"
+        message
       )
     );
   } catch (error) {
     console.error("Error fetching unapproved drivers:", error.message);
-    return res
-      .status(500)
-      .json(new ApiResponse(500, null, "Failed to fetch unapproved drivers"));
+    return res.status(500).json(
+      new ApiResponse(500, null, "Failed to fetch unapproved drivers")
+    );
   }
 });
 
-// Get all rejected drivers (assuming they're marked with isApproved: false and have rejectionReason)
+// Get all rejected drivers (with admin/franchise access control)
 export const getRejectedDrivers = asyncHandler(async (req, res) => {
   try {
-    // Find drivers where isApproved is false AND has rejectionReason
-    const rejectedDrivers = await Driver.find({
+    const { adminId, franchiseId } = req.query;
+
+    // Validate IDs
+    if (adminId && !mongoose.Types.ObjectId.isValid(adminId)) {
+      return res.status(400).json(
+        new ApiResponse(400, null, "Invalid admin ID format")
+      );
+    }
+
+    if (franchiseId && !mongoose.Types.ObjectId.isValid(franchiseId)) {
+      return res.status(400).json(
+        new ApiResponse(400, null, "Invalid franchise ID format")
+      );
+    }
+
+    // Build query object for rejected drivers
+    const query = {
       isApproved: false,
-      rejectionReason: { $exists: true, $ne: "" },
-    });
+      rejectionReason: { $exists: true, $ne: "" }
+    };
+
+    // Apply franchise filter if franchiseId is provided
+    if (franchiseId) {
+      // Only show rejected drivers assigned to this specific franchise
+      query.franchiseId = franchiseId;
+      
+      // Optionally verify franchise exists
+      const franchise = await Franchise.findById(franchiseId);
+      if (!franchise) {
+        return res.status(404).json(
+          new ApiResponse(404, null, "Franchise not found")
+        );
+      }
+    } else if (adminId) {
+      // Admin can see all rejected drivers (both with and without franchise)
+      // No franchise filter applied
+      
+      // Optionally verify admin exists
+      const admin = await Admin.findById(adminId);
+      if (!admin) {
+        return res.status(404).json(
+          new ApiResponse(404, null, "Admin not found")
+        );
+      }
+    } else {
+      // If neither adminId nor franchiseId is provided, return error
+      return res.status(400).json(
+        new ApiResponse(400, null, "Either adminId or franchiseId is required")
+      );
+    }
+
+    // Find rejected drivers with optional population
+    const rejectedDrivers = await Driver.find(query)
+      .populate({
+        path: 'franchiseId',
+        select: 'name email phone'
+      })
+      .sort({ rejectedAt: -1 }); // Sort by rejection date (newest first)
 
     if (rejectedDrivers.length === 0) {
-      return res
-        .status(200)
-        .json(new ApiResponse(200, null, "No rejected drivers found"));
+      const message = franchiseId 
+        ? "No rejected drivers found for this franchise"
+        : "No rejected drivers found";
+      
+      return res.status(200).json(
+        new ApiResponse(200, { drivers: [], count: 0 }, message)
+      );
+    }
+
+    // Format response data
+    const formattedDrivers = rejectedDrivers.map(driver => ({
+      _id: driver._id,
+      userId: driver.userId,
+      name: driver.name,
+      phone: driver.phone,
+      email: driver.email,
+      license_number: driver.license_number,
+      pin_code: driver.pin_code,
+      isActive: driver.isActive,
+      isApproved: driver.isApproved,
+      createdAt: driver.createdAt,
+      franchise: driver.franchiseId ? {
+        _id: driver.franchiseId._id,
+        name: driver.franchiseId.name,
+        email: driver.franchiseId.email,
+        phone: driver.franchiseId.phone
+      } : null,
+      rejectionReason: driver.rejectionReason || '',
+      rejectedBy: driver.rejectedBy || '',
+      rejectedById: driver.rejectedById || null,
+      rejectedAt: driver.rejectedAt || null
+    }));
+
+    // Determine response message
+    let message = "Rejected drivers fetched successfully";
+    if (franchiseId && rejectedDrivers[0]?.franchiseId) {
+      message = `Rejected drivers for franchise "${rejectedDrivers[0].franchiseId.name}" fetched successfully`;
+    } else if (adminId) {
+      message = "All rejected drivers fetched (Admin view)";
     }
 
     return res.status(200).json(
       new ApiResponse(
         200,
         {
-          drivers: rejectedDrivers,
+          drivers: formattedDrivers,
           count: rejectedDrivers.length,
+          filters: {
+            franchiseId: franchiseId || null,
+            adminId: adminId || null
+          }
         },
-        "Rejected drivers fetched successfully"
+        message
       )
     );
   } catch (error) {
     console.error("Error fetching rejected drivers:", error.message);
-    return res
-      .status(500)
-      .json(new ApiResponse(500, null, "Failed to fetch rejected drivers"));
+    return res.status(500).json(
+      new ApiResponse(500, null, "Failed to fetch rejected drivers")
+    );
   }
 });
 
@@ -1235,65 +1677,9 @@ export const getApprovedStatus = asyncHandler(async (req, res) => {
   }
 });
 
-// Approve a driver by ID
+// Approve Driver Function - Updated for commission and fare settings
 export const approveDriverByDriverId = asyncHandler(async (req, res) => {
-  const { driverId, adminId } = req.body;
-
-  if (!driverId || !adminId) {
-    return res
-      .status(400)
-      .json(new ApiResponse(400, null, "Driver ID and Admin ID are required"));
-  }
-
-  try {
-    // Approve the driver
-    const updatedDriver = await Driver.findByIdAndUpdate(
-      driverId,
-      { isApproved: true },
-      { new: true } // Return the updated document
-    );
-
-    if (!updatedDriver) {
-      return res
-        .status(404)
-        .json(new ApiResponse(404, null, "Driver not found"));
-    }
-
-    // Check if Khata entry already exists
-    const existingKhata = await Khata.findOne({ driverId });
-
-    if (!existingKhata) {
-      // Create Khata entry for the approved driver
-      await Khata.create({
-        driverId,
-        adminId,
-        driverdue: 0,
-        admindue: 0,
-      });
-    }
-
-    return res
-      .status(200)
-      .json(
-        new ApiResponse(
-          200,
-          { driver: updatedDriver },
-          "Driver approved successfully and Khata entry created"
-        )
-      );
-  } catch (error) {
-    console.error("Error approving driver or creating Khata:", error.message);
-    return res
-      .status(500)
-      .json(
-        new ApiResponse(500, null, "Failed to approve driver or create Khata")
-      );
-  }
-});
-
-// Reject a driver by ID (alternative - keeps record but marks as rejected)
-export const rejectDriverByDriverId = asyncHandler(async (req, res) => {
-  const { driverId, rejectionReason } = req.body;
+  const { driverId, franchiseId, adminId } = req.body;
 
   if (!driverId) {
     return res
@@ -1301,33 +1687,449 @@ export const rejectDriverByDriverId = asyncHandler(async (req, res) => {
       .json(new ApiResponse(400, null, "Driver ID is required"));
   }
 
-  try {
-    // Update the driver record to mark as rejected
-    const updatedDriver = await Driver.findByIdAndUpdate(
-      driverId,
-      {
-        isApproved: false,
-        rejectionReason: rejectionReason || "Application rejected by admin",
-        isActive: false, // Also deactivate the driver
-      },
-      { new: true }
-    );
+  // Check if either franchiseId OR adminId is provided
+  if (!franchiseId && !adminId) {
+    return res
+      .status(400)
+      .json(
+        new ApiResponse(400, null, "Either franchiseId OR adminId is required")
+      );
+  }
 
-    if (!updatedDriver) {
+  try {
+    // Get driver with franchise info
+    const driver = await Driver.findById(driverId).populate(
+      "franchiseId",
+      "name userId isApproved isActive"
+    );
+    if (!driver) {
       return res
         .status(404)
         .json(new ApiResponse(404, null, "Driver not found"));
     }
+
+    // Check if driver is already approved
+    if (driver.isApproved) {
+      return res
+        .status(400)
+        .json(new ApiResponse(400, null, "Driver is already approved"));
+    }
+
+    // Check driver's required fields
+    if (!driver.pin_code || !driver.name || !driver.license_number) {
+      return res
+        .status(400)
+        .json(
+          new ApiResponse(
+            400,
+            null,
+            "Driver must complete profile (pincode, name, license) before approval"
+          )
+        );
+    }
+
+    let approvalMessage = "";
+    let approvedByType = "";
+    let shouldUpdateFranchiseCount = false;
+    let approverAdminId = null; // The admin who is approving
+
+    // Case 1: Approval using franchiseId
+    if (franchiseId) {
+      // Check if driver has this franchise assigned
+      if (
+        !driver.franchiseId ||
+        driver.franchiseId._id.toString() !== franchiseId.toString()
+      ) {
+        return res
+          .status(403)
+          .json(
+            new ApiResponse(
+              403,
+              null,
+              "This driver is not assigned to your franchise"
+            )
+          );
+      }
+
+      const franchise = driver.franchiseId;
+
+      // Check if franchise is approved and active
+      if (!franchise.isApproved || !franchise.isActive) {
+        return res
+          .status(400)
+          .json(
+            new ApiResponse(
+              400,
+              null,
+              "Cannot approve driver. Franchise is not approved or active."
+            )
+          );
+      }
+
+      // Verify franchise exists
+      const franchiseDoc = await Franchise.findById(franchiseId);
+      if (!franchiseDoc) {
+        return res
+          .status(404)
+          .json(new ApiResponse(404, null, "Franchise not found"));
+      }
+
+      // Franchise is approving, but we need an admin ID for Khata
+      // Get admin ID from request or find a default admin
+      if (!adminId) {
+        // Try to find any admin to use as adminId in Khata
+        const anyAdmin = await Admin.findOne({});
+        if (!anyAdmin) {
+          return res
+            .status(400)
+            .json(
+              new ApiResponse(
+                400,
+                null,
+                "No admin found. Please provide adminId for Khata."
+              )
+            );
+        }
+        approverAdminId = anyAdmin._id;
+      } else {
+        approverAdminId = adminId;
+      }
+
+      approvalMessage = `Driver approved by franchise: ${franchise.name}`;
+      approvedByType = "franchise";
+      shouldUpdateFranchiseCount = true;
+    }
+    // Case 2: Approval using adminId only
+    else if (adminId) {
+      // Check if admin exists
+      const admin = await Admin.findById(adminId);
+      if (!admin) {
+        return res
+          .status(404)
+          .json(new ApiResponse(404, null, "Admin not found"));
+      }
+
+      approverAdminId = adminId;
+      approvalMessage = "Driver approved by admin";
+      approvedByType = "admin";
+
+      // If driver has franchise, update franchise count
+      if (driver.franchiseId) {
+        shouldUpdateFranchiseCount = true;
+      }
+    }
+
+    // STEP 1: Check if FranchiseCommissionSettings exists
+    let franchiseCommissionSettings = null;
+    let adminCommissionRate = 18; // Default admin commission
+    let franchiseCommissionRate = 0;
+
+    if (driver.franchiseId) {
+      franchiseCommissionSettings = await FranchiseCommissionSettings.findOne({
+        franchiseId: driver.franchiseId._id,
+        isActive: true,
+      });
+
+      if (franchiseCommissionSettings) {
+        adminCommissionRate = franchiseCommissionSettings.admin_commission_rate;
+        franchiseCommissionRate =
+          franchiseCommissionSettings.franchise_commission_rate;
+      } else {
+        // Create default commission settings if not exists
+        franchiseCommissionSettings = new FranchiseCommissionSettings({
+          franchiseId: driver.franchiseId._id,
+          admin_commission_rate: 18,
+          franchise_commission_rate: 10,
+          last_changed_by: approverAdminId,
+        });
+
+        // Add initial history entries
+        franchiseCommissionSettings.settings_history.push({
+          setting_type: "admin_commission",
+          field_name: "admin_commission_rate",
+          old_value: 0,
+          new_value: 18,
+          changed_by: approverAdminId,
+          changed_at: new Date(),
+          reason: "Initial commission settings created",
+        });
+
+        franchiseCommissionSettings.settings_history.push({
+          setting_type: "franchise_commission",
+          field_name: "franchise_commission_rate",
+          old_value: 0,
+          new_value: 10,
+          changed_by: approverAdminId,
+          changed_at: new Date(),
+          reason: "Initial commission settings created",
+        });
+
+        await franchiseCommissionSettings.save();
+        console.log(
+          `Created commission settings for franchise: ${driver.franchiseId.name}`
+        );
+      }
+    }
+
+    // STEP 2: Check if Khata entry already exists
+    const existingKhata = await Khata.findOne({ driverId });
+    if (!existingKhata && approverAdminId) {
+      // Create Khata entry with proper commission rates
+      const khataData = {
+        driverId,
+        adminId: approverAdminId,
+        franchiseId: driver.franchiseId ? driver.franchiseId._id : null,
+        driverdue: 0,
+        admindue: 0,
+        franchisedue: 0,
+      };
+
+      console.log("Creating Khata with data:", khataData);
+      const newKhata = await Khata.create(khataData);
+
+      // Add initial due payment details for record keeping
+      newKhata.due_payment_details.push({
+        driverId,
+        rideId: null, // No ride yet
+        total_price: 0,
+        admin_profit: 0,
+        franchise_profit: 0,
+        driver_profit: 0,
+        payment_mode: null,
+        createdAt: new Date(),
+        reason: "Initial Khata entry created during driver approval",
+      });
+
+      await newKhata.save();
+    }
+
+    // STEP 3: Generate ETO card if not exists
+    const existingEtoCard = await ETOCard.findOne({ driverId });
+    if (!existingEtoCard) {
+      let eto_id_num;
+      let isUnique = false;
+      while (!isUnique) {
+        eto_id_num = generateRandom3DigitNumber();
+        const existingEto = await ETOCard.findOne({
+          eto_id_num: `ETO ${eto_id_num}`,
+        });
+        if (!existingEto) {
+          isUnique = true;
+        }
+      }
+
+      const etoCardData = {
+        driverId,
+        userId: driver.userId,
+        eto_id_num: `ETO ${eto_id_num}`,
+        id_details: {
+          name: driver.name,
+          email: driver.email,
+          village: driver.village,
+          police_station: driver.police_station,
+          landmark: driver.landmark,
+          post_office: driver.post_office,
+          district: driver.district,
+          pin_code: driver.pin_code,
+          driver_photo: driver.driver_photo,
+          car_photo: driver.car_photo,
+        },
+        helpLine_num: driver.helpLine_num || "",
+      };
+
+      await ETOCard.create(etoCardData);
+    }
+
+    // STEP 4: Update driver status
+    driver.isApproved = true;
+    driver.isActive = true;
+    await driver.save();
+
+    // STEP 5: Update franchise total_drivers count if needed
+    if (shouldUpdateFranchiseCount && driver.franchiseId) {
+      const approvedDriverCount = await Driver.countDocuments({
+        franchiseId: driver.franchiseId._id,
+        isApproved: true,
+      });
+
+      await Franchise.findByIdAndUpdate(driver.franchiseId._id, {
+        total_drivers: approvedDriverCount,
+      });
+    }
+
+    // STEP 6: Prepare response with commission settings
+    const responseData = {
+      driver: {
+        _id: driver._id,
+        name: driver.name,
+        phone: driver.phone,
+        isApproved: driver.isApproved,
+        isActive: driver.isActive,
+        franchiseId: driver.franchiseId ? driver.franchiseId._id : null,
+        franchiseName: driver.franchiseId ? driver.franchiseId.name : null,
+      },
+      commissionSettings: franchiseCommissionSettings
+        ? {
+            adminCommissionRate:
+              franchiseCommissionSettings.admin_commission_rate,
+            franchiseCommissionRate:
+              franchiseCommissionSettings.franchise_commission_rate,
+          }
+        : {
+            adminCommissionRate: 18, // Default for non-franchise
+            franchiseCommissionRate: 0,
+          },
+      khataInfo: {
+        hasKhata: !!(await Khata.findOne({ driverId })),
+        adminId: approverAdminId,
+        franchiseId: driver.franchiseId ? driver.franchiseId._id : null,
+      },
+      approvedBy: approvedByType,
+    };
 
     return res
       .status(200)
       .json(
         new ApiResponse(
           200,
-          { driver: updatedDriver },
-          "Driver rejected successfully"
+          responseData,
+          `${approvalMessage}. ${
+            driver.franchiseId
+              ? `Commission rates set: Admin ${franchiseCommissionSettings?.admin_commission_rate || 18}%, Franchise ${franchiseCommissionSettings?.franchise_commission_rate || 10}%`
+              : "Default commission rate: Admin 18%"
+          }`
         )
       );
+  } catch (error) {
+    console.error("Error approving driver:", error.message);
+    return res
+      .status(500)
+      .json(new ApiResponse(500, null, "Failed to approve driver"));
+  }
+});
+
+// Reject Driver Function
+export const rejectDriverByDriverId = asyncHandler(async (req, res) => {
+  const { driverId, rejectionReason, franchiseId, adminId } = req.body;
+
+  if (!driverId || !rejectionReason) {
+    return res
+      .status(400)
+      .json(
+        new ApiResponse(
+          400,
+          null,
+          "Driver ID and rejection reason are required"
+        )
+      );
+  }
+
+  try {
+    // Get driver with franchise info
+    const driver = await Driver.findById(driverId).populate(
+      "franchiseId",
+      "name userId isApproved isActive"
+    );
+
+    if (!driver) {
+      return res
+        .status(404)
+        .json(new ApiResponse(404, null, "Driver not found"));
+    }
+
+    // Check if driver is already approved (can't reject approved driver)
+    if (driver.isApproved) {
+      return res
+        .status(400)
+        .json(
+          new ApiResponse(
+            400,
+            null,
+            "Cannot reject an approved driver. Please deactivate instead."
+          )
+        );
+    }
+
+    // Check authorization for franchise rejection
+    if (franchiseId) {
+      // Check if driver has this franchise assigned
+      if (
+        !driver.franchiseId ||
+        driver.franchiseId._id.toString() !== franchiseId.toString()
+      ) {
+        return res
+          .status(403)
+          .json(
+            new ApiResponse(
+              403,
+              null,
+              "You can only reject drivers assigned to your franchise"
+            )
+          );
+      }
+
+      // Check if franchise is approved and active
+      if (!driver.franchiseId.isApproved || !driver.franchiseId.isActive) {
+        return res
+          .status(400)
+          .json(
+            new ApiResponse(
+              400,
+              null,
+              "Cannot reject driver. Franchise is not approved or active."
+            )
+          );
+      }
+    }
+
+    // Update driver with rejection details
+    driver.isApproved = false;
+    driver.isActive = false;
+    driver.rejectionReason = rejectionReason;
+    driver.rejectedBy = franchiseId
+      ? "franchise"
+      : adminId
+        ? "admin"
+        : "system";
+    driver.rejectedById = franchiseId || adminId || null;
+    driver.rejectedAt = new Date();
+
+    await driver.save();
+
+    // Update franchise total_drivers count if driver has franchise
+    // (in case driver was previously approved and now being rejected)
+    if (driver.franchiseId) {
+      const approvedDriverCount = await Driver.countDocuments({
+        franchiseId: driver.franchiseId._id,
+        isApproved: true,
+      });
+
+      await Franchise.findByIdAndUpdate(driver.franchiseId._id, {
+        total_drivers: approvedDriverCount,
+      });
+    }
+
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          driver: {
+            _id: driver._id,
+            name: driver.name,
+            phone: driver.phone,
+            isApproved: driver.isApproved,
+            isActive: driver.isActive,
+            rejectionReason: driver.rejectionReason,
+            rejectedBy: driver.rejectedBy,
+            rejectedAt: driver.rejectedAt,
+            franchiseId: driver.franchiseId ? driver.franchiseId._id : null,
+          },
+          franchiseAssigned: !!driver.franchiseId,
+          franchiseName: driver.franchiseId ? driver.franchiseId.name : null,
+        },
+        "Driver rejected successfully"
+      )
+    );
   } catch (error) {
     console.error("Error rejecting driver:", error.message);
     return res
