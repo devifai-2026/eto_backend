@@ -347,6 +347,7 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
           phone: driver.phone,
           email: driver.email
         },
+        driver_photo: driver.driver_photo || null,
         etoIdNumber: etoCardMap[driver._id.toString()] || 'N/A',
         status: driver.isActive ? 'Active' : 'Inactive',
         totalEarnings: Math.ceil(driver.total_earning || 0),
@@ -375,6 +376,8 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
     if (search) {
       message += `, searched for: "${search}"`;
     }
+    
+    console.log(formattedDrivers)
 
     // Prepare response
     const responseData = {
