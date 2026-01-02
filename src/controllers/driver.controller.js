@@ -90,6 +90,8 @@ export const createDriver = asyncHandler(async (req, res) => {
           ? req.body.current_location.coordinates
           : defaultCoordinates,
       },
+      license_number: req.body.license_number || "",
+      toto_license_number: req.body.toto_license_number || "",
     };
 
     const newDriver = new Driver(driverData);
@@ -111,6 +113,8 @@ export const createDriver = asyncHandler(async (req, res) => {
         // aadhar_number: req.body.aadhar_number,
         driver_photo: req.body.driver_photo,
         car_photo: req.body.car_photo,
+        license_number: req.body.license_number || "",
+        toto_license_number: req.body.toto_license_number || "",
       },
       helpLine_num: req.body.helpLine_num,
     };
@@ -147,16 +151,16 @@ export const createDriver = asyncHandler(async (req, res) => {
 export const getAllDrivers = asyncHandler(async (req, res) => {
   try {
     // Extract and validate query parameters
-    const { 
-      adminId, 
-      franchiseId, 
-      search, 
-      isActive, 
+    const {
+      adminId,
+      franchiseId,
+      search,
+      isActive,
       isOnRide,
-      page = '1', 
-      limit = '20',
-      sortBy = 'createdAt',
-      sortOrder = 'desc'
+      page = "1",
+      limit = "20",
+      sortBy = "createdAt",
+      sortOrder = "desc",
     } = req.query;
 
     // Validate and parse pagination parameters
@@ -164,26 +168,31 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
     const limitNum = Math.max(1, Math.min(100, parseInt(limit) || 20));
 
     // Validate sort parameters
-    const validSortFields = ['createdAt', 'name', 'total_earning', 'total_complete_rides'];
+    const validSortFields = [
+      "createdAt",
+      "name",
+      "total_earning",
+      "total_complete_rides",
+    ];
     const isValidSortField = validSortFields.includes(sortBy);
-    const finalSortBy = isValidSortField ? sortBy : 'createdAt';
-    
-    const isValidSortOrder = ['asc', 'desc'].includes(sortOrder.toLowerCase());
-    const finalSortOrder = isValidSortOrder ? sortOrder.toLowerCase() : 'desc';
+    const finalSortBy = isValidSortField ? sortBy : "createdAt";
+
+    const isValidSortOrder = ["asc", "desc"].includes(sortOrder.toLowerCase());
+    const finalSortOrder = isValidSortOrder ? sortOrder.toLowerCase() : "desc";
 
     // Build query object
     const baseQuery = {};
 
     // Admin/Franchise access control
     let appliedFranchiseId = null;
-    
+
     if (franchiseId) {
       if (!mongoose.Types.ObjectId.isValid(franchiseId)) {
-        return res.status(400).json(
-          new ApiResponse(400, null, "Invalid franchise ID format")
-        );
+        return res
+          .status(400)
+          .json(new ApiResponse(400, null, "Invalid franchise ID format"));
       }
-      
+
       // Only apply franchise filter if adminId is NOT provided
       if (!adminId) {
         baseQuery.franchiseId = franchiseId;
@@ -192,36 +201,40 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
     }
 
     // Search functionality
-    if (search && search.trim() !== '') {
+    if (search && search.trim() !== "") {
       const searchTerm = search.trim();
-      const searchRegex = new RegExp(searchTerm, 'i');
-      
+      const searchRegex = new RegExp(searchTerm, "i");
+
       baseQuery.$or = [
         { name: { $regex: searchRegex } },
         { phone: { $regex: searchRegex } },
         { email: { $regex: searchRegex } },
-        { license_number: { $regex: searchRegex } }
+        { license_number: { $regex: searchRegex } },
       ];
     }
 
     // Boolean filters
     if (isActive !== undefined) {
-      if (isActive === 'true' || isActive === 'false') {
-        baseQuery.isActive = isActive === 'true';
+      if (isActive === "true" || isActive === "false") {
+        baseQuery.isActive = isActive === "true";
       } else {
-        return res.status(400).json(
-          new ApiResponse(400, null, "isActive must be 'true' or 'false'")
-        );
+        return res
+          .status(400)
+          .json(
+            new ApiResponse(400, null, "isActive must be 'true' or 'false'")
+          );
       }
     }
 
     if (isOnRide !== undefined) {
-      if (isOnRide === 'true' || isOnRide === 'false') {
-        baseQuery.is_on_ride = isOnRide === 'true';
+      if (isOnRide === "true" || isOnRide === "false") {
+        baseQuery.is_on_ride = isOnRide === "true";
       } else {
-        return res.status(400).json(
-          new ApiResponse(400, null, "isOnRide must be 'true' or 'false'")
-        );
+        return res
+          .status(400)
+          .json(
+            new ApiResponse(400, null, "isOnRide must be 'true' or 'false'")
+          );
       }
     }
 
@@ -230,7 +243,7 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
 
     // Configure sorting
     const sortOptions = {};
-    sortOptions[finalSortBy] = finalSortOrder === 'desc' ? -1 : 1;
+    sortOptions[finalSortBy] = finalSortOrder === "desc" ? -1 : 1;
 
     // ====================
     // GET SUMMARY STATISTICS
@@ -239,7 +252,7 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
       totalDrivers: 0,
       totalActiveDrivers: 0,
       totalEarnings: 0,
-      totalRides: 0
+      totalRides: 0,
     };
 
     // Get total drivers count
@@ -250,8 +263,8 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
     summaryStats.totalActiveDrivers = await Driver.countDocuments(activeQuery);
 
     // Get driver IDs for earnings and rides calculation
-    const driversForStats = await Driver.find(baseQuery).select('_id').lean();
-    const driverIds = driversForStats.map(driver => driver._id);
+    const driversForStats = await Driver.find(baseQuery).select("_id").lean();
+    const driverIds = driversForStats.map((driver) => driver._id);
 
     if (driverIds.length > 0) {
       // Get total earnings and rides from RideDetails
@@ -259,20 +272,22 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
         {
           $match: {
             driverId: { $in: driverIds },
-            isRide_ended: true
-          }
+            isRide_ended: true,
+          },
         },
         {
           $group: {
             _id: null,
             totalEarnings: { $sum: "$driver_profit" },
-            totalRides: { $sum: 1 }
-          }
-        }
+            totalRides: { $sum: 1 },
+          },
+        },
       ]);
 
       if (statsAggregation.length > 0) {
-        summaryStats.totalEarnings = Math.ceil(statsAggregation[0].totalEarnings);
+        summaryStats.totalEarnings = Math.ceil(
+          statsAggregation[0].totalEarnings
+        );
         summaryStats.totalRides = statsAggregation[0].totalRides;
       }
     }
@@ -298,7 +313,7 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
               limit: limitNum,
               totalPages,
               hasNext: false,
-              hasPrev: false
+              hasPrev: false,
             },
             filters: {
               search: search || null,
@@ -307,8 +322,8 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
               franchiseId: appliedFranchiseId,
               adminId: adminId || null,
               sortBy: finalSortBy,
-              sortOrder: finalSortOrder
-            }
+              sortOrder: finalSortOrder,
+            },
           },
           "No drivers found matching the criteria"
         )
@@ -317,46 +332,50 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
 
     // Execute query with pagination - select only needed fields
     const drivers = await Driver.find(baseQuery)
-      .select('_id name phone email createdAt isActive is_on_ride total_earning total_complete_rides userId driver_photo')
+      .select(
+        "_id name phone email createdAt isActive is_on_ride total_earning total_complete_rides userId driver_photo"
+      )
       .sort(sortOptions)
       .skip(skip)
       .limit(limitNum)
       .lean();
 
     // Get ETO card numbers for these drivers
-    const etoCards = await ETOCard.find({ 
-      driverId: { $in: drivers.map(d => d._id) } 
+    const etoCards = await ETOCard.find({
+      driverId: { $in: drivers.map((d) => d._id) },
     })
-    .select('driverId eto_id_num')
-    .lean();
+      .select("driverId eto_id_num")
+      .lean();
 
     // Create ETO card map
     const etoCardMap = {};
-    etoCards.forEach(card => {
+    etoCards.forEach((card) => {
       etoCardMap[card.driverId.toString()] = card.eto_id_num;
     });
 
     // Format drivers for response
-    const formattedDrivers = drivers.map(driver => {
+    const formattedDrivers = drivers.map((driver) => {
       return {
         id: driver._id,
         userId: driver.userId,
         name: driver.name,
-        joinedDate: driver.createdAt.toISOString().split('T')[0], // YYYY-MM-DD format
+        joinedDate: driver.createdAt.toISOString().split("T")[0], // YYYY-MM-DD format
         contact: {
           phone: driver.phone,
-          email: driver.email
+          email: driver.email,
         },
         driver_photo: driver.driver_photo || null,
-        etoIdNumber: etoCardMap[driver._id.toString()] || 'N/A',
-        status: driver.isActive ? 'Active' : 'Inactive',
+        etoIdNumber: etoCardMap[driver._id.toString()] || "N/A",
+        status: driver.isActive ? "Active" : "Inactive",
         totalEarnings: Math.ceil(driver.total_earning || 0),
         totalRides: driver.total_complete_rides || 0,
         isOnRide: driver.is_on_ride || false,
         // Additional quick status
-        availability: driver.isActive 
-          ? (driver.is_on_ride ? 'On Ride' : 'Available') 
-          : 'Offline'
+        availability: driver.isActive
+          ? driver.is_on_ride
+            ? "On Ride"
+            : "Available"
+          : "Offline",
       };
     });
 
@@ -365,31 +384,36 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
     // ====================
     // Generate response message
     let message = "Drivers retrieved successfully";
-    
+
     if (appliedFranchiseId) {
-      const franchise = await Franchise.findById(appliedFranchiseId).select('name').lean();
+      const franchise = await Franchise.findById(appliedFranchiseId)
+        .select("name")
+        .lean();
       message = `Franchise "${franchise?.name || appliedFranchiseId}" drivers retrieved`;
     } else if (adminId) {
       message = "All drivers retrieved (Admin view)";
     }
-    
+
     if (search) {
       message += `, searched for: "${search}"`;
     }
-    
-    console.log(formattedDrivers)
+
+    // console.log(formattedDrivers)
 
     // Prepare response
     const responseData = {
       summary: {
         ...summaryStats,
-        totalInactiveDrivers: summaryStats.totalDrivers - summaryStats.totalActiveDrivers,
-        avgEarningsPerDriver: summaryStats.totalDrivers > 0 
-          ? Math.ceil(summaryStats.totalEarnings / summaryStats.totalDrivers) 
-          : 0,
-        avgRidesPerDriver: summaryStats.totalDrivers > 0 
-          ? Math.ceil(summaryStats.totalRides / summaryStats.totalDrivers) 
-          : 0
+        totalInactiveDrivers:
+          summaryStats.totalDrivers - summaryStats.totalActiveDrivers,
+        avgEarningsPerDriver:
+          summaryStats.totalDrivers > 0
+            ? Math.ceil(summaryStats.totalEarnings / summaryStats.totalDrivers)
+            : 0,
+        avgRidesPerDriver:
+          summaryStats.totalDrivers > 0
+            ? Math.ceil(summaryStats.totalRides / summaryStats.totalDrivers)
+            : 0,
       },
       drivers: formattedDrivers,
       pagination: {
@@ -398,7 +422,7 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
         limit: limitNum,
         totalPages,
         hasNext: pageNum < totalPages,
-        hasPrev: pageNum > 1
+        hasPrev: pageNum > 1,
       },
       filters: {
         search: search || null,
@@ -407,24 +431,23 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
         franchiseId: appliedFranchiseId,
         adminId: adminId || null,
         sortBy: finalSortBy,
-        sortOrder: finalSortOrder
-      }
+        sortOrder: finalSortOrder,
+      },
     };
 
-    return res.status(200).json(
-      new ApiResponse(200, responseData, message)
-    );
-
+    return res.status(200).json(new ApiResponse(200, responseData, message));
   } catch (error) {
     console.error("Error in getAllDrivers:", {
       message: error.message,
       stack: error.stack,
-      query: req.query
+      query: req.query,
     });
-    
-    return res.status(500).json(
-      new ApiResponse(500, null, "An error occurred while retrieving drivers")
-    );
+
+    return res
+      .status(500)
+      .json(
+        new ApiResponse(500, null, "An error occurred while retrieving drivers")
+      );
   }
 });
 
@@ -439,6 +462,7 @@ export const getDriverById = asyncHandler(async (req, res) => {
   }
 
   try {
+    // Find driver with populated ride details
     const driver = await Driver.findOne({ userId: id }).populate(
       "ride_details.rideDetailsId"
     );
@@ -448,6 +472,9 @@ export const getDriverById = asyncHandler(async (req, res) => {
         .status(404)
         .json(new ApiResponse(404, null, "Driver not found"));
     }
+
+    // Get ETO card information for this driver
+    const etoCard = await ETOCard.findOne({ driverId: driver._id });
 
     // Calculate total completed kilometers
     let totalKm = 0;
@@ -474,41 +501,74 @@ export const getDriverById = asyncHandler(async (req, res) => {
     // Round to 2 decimal places and assign to schema field
     driver.total_completed_km = Math.round(totalKm * 100) / 100;
 
-    // Optional: save it to DB (uncomment if needed)
-    // await driver.save();
+    // Prepare ETO card data for response
+    const etoCardData = etoCard ? {
+      eto_id_num: etoCard.eto_id_num,
+      helpLine_num: etoCard.helpLine_num,
+      id_details: {
+        name: etoCard.id_details?.name || driver.name,
+        email: etoCard.id_details?.email || driver.email,
+        village: etoCard.id_details?.village || driver.village,
+        police_station: etoCard.id_details?.police_station || driver.police_station,
+        landmark: etoCard.id_details?.landmark || driver.landmark,
+        post_office: etoCard.id_details?.post_office || driver.post_office,
+        district: etoCard.id_details?.district || driver.district,
+        pin_code: etoCard.id_details?.pin_code || driver.pin_code,
+        toto_license_number: etoCard.id_details?.toto_license_number || driver.toto_license_number,
+        license_number: etoCard.id_details?.license_number || driver.license_number,
+        driver_photo: etoCard.id_details?.driver_photo || driver.driver_photo,
+        car_photo: etoCard.id_details?.car_photo || driver.car_photo,
+      },
+      createdAt: etoCard.createdAt,
+      updatedAt: etoCard.updatedAt
+    } : null;
 
+    // Prepare driver response data
     const responseData = {
-      current_location: driver.current_location,
-      total_completed_km: Math.round(totalKm * 100) / 100,
-      _id: driver._id,
-      userId: driver.userId,
-      phone: driver.phone,
-      login_time: driver.login_time,
-      logout_time: driver.logout_time,
-      isActive: driver.isActive,
-      isApproved: driver.isApproved,
-      socketId: driver.socketId,
-      due_wallet: driver.due_wallet,
-      cash_wallet: driver.cash_wallet,
-      online_wallet: driver.online_wallet,
-      total_earning: driver.total_earning,
-      name: driver.name,
-      email: driver.email,
-      village: driver.village,
-      police_station: driver.police_station,
-      landmark: driver.landmark,
-      post_office: driver.post_office,
-      district: driver.district,
-      pin_code: driver.pin_code,
-      // aadhar_number: driver.aadhar_number,
-      driver_photo: driver.driver_photo,
-      car_photo: driver.car_photo,
-      license_number: driver.license_number,
-      aadhar_front_photo: driver.aadhar_front_photo,
-      aadhar_back_photo: driver.aadhar_back_photo,
-      total_complete_rides: driver.total_complete_rides,
-      is_on_ride: driver.is_on_ride,
-      current_ride_id: driver.current_ride_id,
+      driver: {
+        current_location: driver.current_location,
+        total_completed_km: Math.round(totalKm * 100) / 100,
+        _id: driver._id,
+        userId: driver.userId,
+        phone: driver.phone,
+        login_time: driver.login_time,
+        logout_time: driver.logout_time,
+        isActive: driver.isActive,
+        isApproved: driver.isApproved,
+        socketId: driver.socketId,
+        oneSignalPlayerId: driver.oneSignalPlayerId,
+        due_wallet: driver.due_wallet,
+        cash_wallet: driver.cash_wallet,
+        online_wallet: driver.online_wallet,
+        total_earning: driver.total_earning,
+        name: driver.name,
+        email: driver.email,
+        village: driver.village,
+        police_station: driver.police_station,
+        landmark: driver.landmark,
+        post_office: driver.post_office,
+        district: driver.district,
+        pin_code: driver.pin_code,
+        // aadhar_number: driver.aadhar_number,
+        driver_photo: driver.driver_photo,
+        car_photo: driver.car_photo,
+        license_number: driver.license_number,
+        toto_license_number: driver.toto_license_number,
+        aadhar_front_photo: driver.aadhar_front_photo,
+        aadhar_back_photo: driver.aadhar_back_photo,
+        total_complete_rides: driver.total_complete_rides,
+        is_on_ride: driver.is_on_ride,
+        current_ride_id: driver.current_ride_id,
+        total_completed_km: driver.total_completed_km,
+        rejectionReason: driver.rejectionReason,
+        hasDueRequest: driver.hasDueRequest,
+        franchiseId: driver.franchiseId,
+        lastSeen: driver.lastSeen,
+        createdAt: driver.createdAt,
+        updatedAt: driver.updatedAt
+      },
+      etoCard: etoCardData,
+      hasEtoCard: !!etoCard
     };
 
     return res
@@ -1370,15 +1430,15 @@ export const getUnapprovedDrivers = asyncHandler(async (req, res) => {
 
     // Validate IDs
     if (adminId && !mongoose.Types.ObjectId.isValid(adminId)) {
-      return res.status(400).json(
-        new ApiResponse(400, null, "Invalid admin ID format")
-      );
+      return res
+        .status(400)
+        .json(new ApiResponse(400, null, "Invalid admin ID format"));
     }
 
     if (franchiseId && !mongoose.Types.ObjectId.isValid(franchiseId)) {
-      return res.status(400).json(
-        new ApiResponse(400, null, "Invalid franchise ID format")
-      );
+      return res
+        .status(400)
+        .json(new ApiResponse(400, null, "Invalid franchise ID format"));
     }
 
     // Build query object
@@ -1388,52 +1448,58 @@ export const getUnapprovedDrivers = asyncHandler(async (req, res) => {
     if (franchiseId) {
       // Only show drivers assigned to this specific franchise
       query.franchiseId = franchiseId;
-      
+
       // Optionally verify franchise exists
       const franchise = await Franchise.findById(franchiseId);
       if (!franchise) {
-        return res.status(404).json(
-          new ApiResponse(404, null, "Franchise not found")
-        );
+        return res
+          .status(404)
+          .json(new ApiResponse(404, null, "Franchise not found"));
       }
     } else if (adminId) {
       // Admin can see all unapproved drivers (both with and without franchise)
       // No franchise filter applied
-      
+
       // Optionally verify admin exists
       const admin = await Admin.findById(adminId);
       if (!admin) {
-        return res.status(404).json(
-          new ApiResponse(404, null, "Admin not found")
-        );
+        return res
+          .status(404)
+          .json(new ApiResponse(404, null, "Admin not found"));
       }
     } else {
       // If neither adminId nor franchiseId is provided, return error
-      return res.status(400).json(
-        new ApiResponse(400, null, "Either adminId or franchiseId is required")
-      );
+      return res
+        .status(400)
+        .json(
+          new ApiResponse(
+            400,
+            null,
+            "Either adminId or franchiseId is required"
+          )
+        );
     }
 
     // Find unapproved drivers with optional population
     const unapprovedDrivers = await Driver.find(query)
       .populate({
-        path: 'franchiseId',
-        select: 'name email phone'
+        path: "franchiseId",
+        select: "name email phone",
       })
       .sort({ createdAt: -1 }); // Sort by newest first
 
     if (unapprovedDrivers.length === 0) {
-      const message = franchiseId 
+      const message = franchiseId
         ? "No unapproved drivers found for this franchise"
         : "No unapproved drivers found";
-      
-      return res.status(200).json(
-        new ApiResponse(200, { drivers: [], count: 0 }, message)
-      );
+
+      return res
+        .status(200)
+        .json(new ApiResponse(200, { drivers: [], count: 0 }, message));
     }
 
     // Format response data
-    const formattedDrivers = unapprovedDrivers.map(driver => ({
+    const formattedDrivers = unapprovedDrivers.map((driver) => ({
       _id: driver._id,
       userId: driver.userId,
       name: driver.name,
@@ -1450,16 +1516,18 @@ export const getUnapprovedDrivers = asyncHandler(async (req, res) => {
       driver_photo: driver.driver_photo,
       aadhar_front_photo: driver.aadhar_front_photo,
       aadhar_back_photo: driver.aadhar_back_photo,
-      
+
       isActive: driver.isActive,
       createdAt: driver.createdAt,
-      franchise: driver.franchiseId ? {
-        _id: driver.franchiseId._id,
-        name: driver.franchiseId.name,
-        email: driver.franchiseId.email,
-        phone: driver.franchiseId.phone
-      } : null,
-      rejectionReason: driver.rejectionReason || ''
+      franchise: driver.franchiseId
+        ? {
+            _id: driver.franchiseId._id,
+            name: driver.franchiseId.name,
+            email: driver.franchiseId.email,
+            phone: driver.franchiseId.phone,
+          }
+        : null,
+      rejectionReason: driver.rejectionReason || "",
     }));
 
     // Determine response message
@@ -1478,17 +1546,17 @@ export const getUnapprovedDrivers = asyncHandler(async (req, res) => {
           count: unapprovedDrivers.length,
           filters: {
             franchiseId: franchiseId || null,
-            adminId: adminId || null
-          }
+            adminId: adminId || null,
+          },
         },
         message
       )
     );
   } catch (error) {
     console.error("Error fetching unapproved drivers:", error.message);
-    return res.status(500).json(
-      new ApiResponse(500, null, "Failed to fetch unapproved drivers")
-    );
+    return res
+      .status(500)
+      .json(new ApiResponse(500, null, "Failed to fetch unapproved drivers"));
   }
 });
 
@@ -1499,73 +1567,79 @@ export const getRejectedDrivers = asyncHandler(async (req, res) => {
 
     // Validate IDs
     if (adminId && !mongoose.Types.ObjectId.isValid(adminId)) {
-      return res.status(400).json(
-        new ApiResponse(400, null, "Invalid admin ID format")
-      );
+      return res
+        .status(400)
+        .json(new ApiResponse(400, null, "Invalid admin ID format"));
     }
 
     if (franchiseId && !mongoose.Types.ObjectId.isValid(franchiseId)) {
-      return res.status(400).json(
-        new ApiResponse(400, null, "Invalid franchise ID format")
-      );
+      return res
+        .status(400)
+        .json(new ApiResponse(400, null, "Invalid franchise ID format"));
     }
 
     // Build query object for rejected drivers
     const query = {
       isApproved: false,
-      rejectionReason: { $exists: true, $ne: "" }
+      rejectionReason: { $exists: true, $ne: "" },
     };
 
     // Apply franchise filter if franchiseId is provided
     if (franchiseId) {
       // Only show rejected drivers assigned to this specific franchise
       query.franchiseId = franchiseId;
-      
+
       // Optionally verify franchise exists
       const franchise = await Franchise.findById(franchiseId);
       if (!franchise) {
-        return res.status(404).json(
-          new ApiResponse(404, null, "Franchise not found")
-        );
+        return res
+          .status(404)
+          .json(new ApiResponse(404, null, "Franchise not found"));
       }
     } else if (adminId) {
       // Admin can see all rejected drivers (both with and without franchise)
       // No franchise filter applied
-      
+
       // Optionally verify admin exists
       const admin = await Admin.findById(adminId);
       if (!admin) {
-        return res.status(404).json(
-          new ApiResponse(404, null, "Admin not found")
-        );
+        return res
+          .status(404)
+          .json(new ApiResponse(404, null, "Admin not found"));
       }
     } else {
       // If neither adminId nor franchiseId is provided, return error
-      return res.status(400).json(
-        new ApiResponse(400, null, "Either adminId or franchiseId is required")
-      );
+      return res
+        .status(400)
+        .json(
+          new ApiResponse(
+            400,
+            null,
+            "Either adminId or franchiseId is required"
+          )
+        );
     }
 
     // Find rejected drivers with optional population
     const rejectedDrivers = await Driver.find(query)
       .populate({
-        path: 'franchiseId',
-        select: 'name email phone'
+        path: "franchiseId",
+        select: "name email phone",
       })
       .sort({ rejectedAt: -1 }); // Sort by rejection date (newest first)
 
     if (rejectedDrivers.length === 0) {
-      const message = franchiseId 
+      const message = franchiseId
         ? "No rejected drivers found for this franchise"
         : "No rejected drivers found";
-      
-      return res.status(200).json(
-        new ApiResponse(200, { drivers: [], count: 0 }, message)
-      );
+
+      return res
+        .status(200)
+        .json(new ApiResponse(200, { drivers: [], count: 0 }, message));
     }
 
     // Format response data
-    const formattedDrivers = rejectedDrivers.map(driver => ({
+    const formattedDrivers = rejectedDrivers.map((driver) => ({
       _id: driver._id,
       userId: driver.userId,
       name: driver.name,
@@ -1576,16 +1650,18 @@ export const getRejectedDrivers = asyncHandler(async (req, res) => {
       isActive: driver.isActive,
       isApproved: driver.isApproved,
       createdAt: driver.createdAt,
-      franchise: driver.franchiseId ? {
-        _id: driver.franchiseId._id,
-        name: driver.franchiseId.name,
-        email: driver.franchiseId.email,
-        phone: driver.franchiseId.phone
-      } : null,
-      rejectionReason: driver.rejectionReason || '',
-      rejectedBy: driver.rejectedBy || '',
+      franchise: driver.franchiseId
+        ? {
+            _id: driver.franchiseId._id,
+            name: driver.franchiseId.name,
+            email: driver.franchiseId.email,
+            phone: driver.franchiseId.phone,
+          }
+        : null,
+      rejectionReason: driver.rejectionReason || "",
+      rejectedBy: driver.rejectedBy || "",
       rejectedById: driver.rejectedById || null,
-      rejectedAt: driver.rejectedAt || null
+      rejectedAt: driver.rejectedAt || null,
     }));
 
     // Determine response message
@@ -1604,17 +1680,17 @@ export const getRejectedDrivers = asyncHandler(async (req, res) => {
           count: rejectedDrivers.length,
           filters: {
             franchiseId: franchiseId || null,
-            adminId: adminId || null
-          }
+            adminId: adminId || null,
+          },
         },
         message
       )
     );
   } catch (error) {
     console.error("Error fetching rejected drivers:", error.message);
-    return res.status(500).json(
-      new ApiResponse(500, null, "Failed to fetch rejected drivers")
-    );
+    return res
+      .status(500)
+      .json(new ApiResponse(500, null, "Failed to fetch rejected drivers"));
   }
 });
 

@@ -109,7 +109,12 @@ const driverSchema = new Schema(
     },
     license_number: {
       type: String,
-      required: [true, "License number is required"],
+      // required: [true, "License number is required"],
+      trim: true,
+    },
+    toto_license_number: {
+      type: String,
+      // required: [true, "Toto license number is required"],
       trim: true,
     },
     ride_details: [

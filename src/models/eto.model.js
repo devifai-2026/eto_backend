@@ -34,6 +34,12 @@ const ETOCardSchema = new Schema({
     pin_code: {
       type: String,
     },
+    toto_license_number: {
+      type: String,
+    },
+    license_number: {
+      type: String,
+    },
     // adhar_number: {
     //   type: String,
     // },
