@@ -317,7 +317,7 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
 
     // Execute query with pagination - select only needed fields
     const drivers = await Driver.find(baseQuery)
-      .select('_id name phone email createdAt isActive is_on_ride total_earning total_complete_rides userId')
+      .select('_id name phone email createdAt isActive is_on_ride total_earning total_complete_rides userId driver_photo')
       .sort(sortOptions)
       .skip(skip)
       .limit(limitNum)
