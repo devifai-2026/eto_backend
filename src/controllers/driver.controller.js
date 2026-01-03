@@ -1891,14 +1891,14 @@ export const approveDriverByDriverId = asyncHandler(async (req, res) => {
     }
 
     // Check driver's required fields
-    if (!driver.pin_code || !driver.name || !driver.license_number) {
+    if (!driver.pin_code || !driver.name) {
       return res
         .status(400)
         .json(
           new ApiResponse(
             400,
             null,
-            "Driver must complete profile (pincode, name, license) before approval"
+            "Driver must complete profile (pincode, name) before approval"
           )
         );
     }
@@ -2059,7 +2059,7 @@ export const approveDriverByDriverId = asyncHandler(async (req, res) => {
         franchisedue: 0,
       };
 
-      console.log("Creating Khata with data:", khataData);
+      // console.log("Creating Khata with data:", khataData);
       const newKhata = await Khata.create(khataData);
 
       // Add initial due payment details for record keeping
