@@ -6,7 +6,6 @@ import {
   getAllActiveDrivers,
   getAllDrivers,
   getCurrentRide,
-  getDriverById,
   getDriverRideById,
   getRideHistory,
   updateDriverProfile,
@@ -26,6 +25,8 @@ import {
   updateOneSignalPlayerId,
   getRejectedDrivers,
   rejectDriverByDriverId,
+  getDriverByIdApp,
+  getDriverByIdAdmin,
 } from "../controllers/driver.controller.js";
 import { getETOCardById } from "../controllers/etoController.js";
 
@@ -59,7 +60,8 @@ router.route("/getRecentRides/:id").get(getRecentRides);
 router.route("/getTotalEarningByDate/:userId").post(getTotalEarningByDate);
 router.route("/getTodaysEarnings/:userId").get(getTodaysEarnings);
 router.route("/getWalletBalance/:userId").get(getWalletBalance);
-router.route("/:id").get(getDriverById);
+router.route("/admin/:id").get(getDriverByIdAdmin);
+router.route("/:id").get(getDriverByIdApp);
 router.delete("/deleteAccount/:driverId", deleteDriverAccount);
 
 export default router;

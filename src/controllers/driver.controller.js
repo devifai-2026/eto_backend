@@ -452,7 +452,7 @@ export const getAllDrivers = asyncHandler(async (req, res) => {
 });
 
 // Get Driver by ID Function
-export const getDriverById = asyncHandler(async (req, res) => {
+export const getDriverByIdAdmin = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
   if (!id) {
@@ -569,6 +569,102 @@ export const getDriverById = asyncHandler(async (req, res) => {
       },
       etoCard: etoCardData,
       hasEtoCard: !!etoCard
+    };
+
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(200, responseData, "Driver retrieved successfully")
+      );
+  } catch (error) {
+    console.error("Error retrieving driver:", error.message);
+    return res
+      .status(500)
+      .json(new ApiResponse(500, null, "Failed to retrieve driver"));
+  }
+});
+
+
+export const getDriverByIdApp = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!id) {
+    return res
+      .status(400)
+      .json(new ApiResponse(400, null, "Driver ID is required"));
+  }
+
+  try {
+    const driver = await Driver.findOne({ userId: id }).populate(
+      "ride_details.rideDetailsId"
+    );
+
+    if (!driver) {
+      return res
+        .status(404)
+        .json(new ApiResponse(404, null, "Driver not found"));
+    }
+
+    // Calculate total completed kilometers
+    let totalKm = 0;
+
+    for (const rideEntry of driver.ride_details) {
+      const ride = rideEntry.rideDetailsId;
+
+      if (ride && ride.isRide_ended) {
+        const pickup = ride.pickup_location?.coordinates;
+        const drop = ride.drop_location?.coordinates;
+
+        if (pickup && drop && pickup.length === 2 && drop.length === 2) {
+          const distanceInMeters = geolib.getDistance(
+            { latitude: pickup[1], longitude: pickup[0] },
+            { latitude: drop[1], longitude: drop[0] }
+          );
+
+          const distanceInKm = distanceInMeters / 1000;
+          totalKm += distanceInKm;
+        }
+      }
+    }
+
+    // Round to 2 decimal places and assign to schema field
+    driver.total_completed_km = Math.round(totalKm * 100) / 100;
+
+    // Optional: save it to DB (uncomment if needed)
+    // await driver.save();
+
+    const responseData = {
+      current_location: driver.current_location,
+      total_completed_km: Math.round(totalKm * 100) / 100,
+      _id: driver._id,
+      userId: driver.userId,
+      phone: driver.phone,
+      login_time: driver.login_time,
+      logout_time: driver.logout_time,
+      isActive: driver.isActive,
+      isApproved: driver.isApproved,
+      socketId: driver.socketId,
+      due_wallet: driver.due_wallet,
+      cash_wallet: driver.cash_wallet,
+      online_wallet: driver.online_wallet,
+      total_earning: driver.total_earning,
+      name: driver.name,
+      email: driver.email,
+      village: driver.village,
+      police_station: driver.police_station,
+      landmark: driver.landmark,
+      post_office: driver.post_office,
+      district: driver.district,
+      pin_code: driver.pin_code,
+      // aadhar_number: driver.aadhar_number,
+      driver_photo: driver.driver_photo,
+      car_photo: driver.car_photo,
+      license_number: driver.license_number,
+      aadhar_front_photo: driver.aadhar_front_photo,
+      aadhar_back_photo: driver.aadhar_back_photo,
+      total_complete_rides: driver.total_complete_rides,
+      is_on_ride: driver.is_on_ride,
+      current_ride_id: driver.current_ride_id,
     };
 
     return res
