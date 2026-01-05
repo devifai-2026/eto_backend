@@ -1698,6 +1698,7 @@ export const getRideHistory = asyncHandler(async (req, res) => {
         updatedAt: 1,
         franchiseId: 1,
         adminId: 1,
+        driverNumber: 1,
         franchiseInfo: { $arrayElemAt: ["$franchiseInfo", 0] },
       },
     });
