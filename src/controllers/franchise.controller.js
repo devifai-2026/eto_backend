@@ -653,7 +653,7 @@ export const getFranchiseDrivers = asyncHandler(async (req, res) => {
     // Get drivers with pagination
     const drivers = await Driver.find(query)
       .select(
-        "name phone email isActive isApproved total_complete_rides total_earning current_location is_on_ride current_ride_id userId login_time logout_time createdAt"
+        "name phone email driver_photo isActive isApproved total_complete_rides total_earning current_location is_on_ride current_ride_id userId login_time logout_time createdAt"
       )
       .skip(skip)
       .limit(parseInt(limit))
