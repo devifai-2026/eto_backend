@@ -502,26 +502,33 @@ export const getDriverByIdAdmin = asyncHandler(async (req, res) => {
     driver.total_completed_km = Math.round(totalKm * 100) / 100;
 
     // Prepare ETO card data for response
-    const etoCardData = etoCard ? {
-      eto_id_num: etoCard.eto_id_num,
-      helpLine_num: etoCard.helpLine_num,
-      id_details: {
-        name: etoCard.id_details?.name || driver.name,
-        email: etoCard.id_details?.email || driver.email,
-        village: etoCard.id_details?.village || driver.village,
-        police_station: etoCard.id_details?.police_station || driver.police_station,
-        landmark: etoCard.id_details?.landmark || driver.landmark,
-        post_office: etoCard.id_details?.post_office || driver.post_office,
-        district: etoCard.id_details?.district || driver.district,
-        pin_code: etoCard.id_details?.pin_code || driver.pin_code,
-        toto_license_number: etoCard.id_details?.toto_license_number || driver.toto_license_number,
-        license_number: etoCard.id_details?.license_number || driver.license_number,
-        driver_photo: etoCard.id_details?.driver_photo || driver.driver_photo,
-        car_photo: etoCard.id_details?.car_photo || driver.car_photo,
-      },
-      createdAt: etoCard.createdAt,
-      updatedAt: etoCard.updatedAt
-    } : null;
+    const etoCardData = etoCard
+      ? {
+          eto_id_num: etoCard.eto_id_num,
+          helpLine_num: etoCard.helpLine_num,
+          id_details: {
+            name: etoCard.id_details?.name || driver.name,
+            email: etoCard.id_details?.email || driver.email,
+            village: etoCard.id_details?.village || driver.village,
+            police_station:
+              etoCard.id_details?.police_station || driver.police_station,
+            landmark: etoCard.id_details?.landmark || driver.landmark,
+            post_office: etoCard.id_details?.post_office || driver.post_office,
+            district: etoCard.id_details?.district || driver.district,
+            pin_code: etoCard.id_details?.pin_code || driver.pin_code,
+            toto_license_number:
+              etoCard.id_details?.toto_license_number ||
+              driver.toto_license_number,
+            license_number:
+              etoCard.id_details?.license_number || driver.license_number,
+            driver_photo:
+              etoCard.id_details?.driver_photo || driver.driver_photo,
+            car_photo: etoCard.id_details?.car_photo || driver.car_photo,
+          },
+          createdAt: etoCard.createdAt,
+          updatedAt: etoCard.updatedAt,
+        }
+      : null;
 
     // Prepare driver response data
     const responseData = {
@@ -565,10 +572,10 @@ export const getDriverByIdAdmin = asyncHandler(async (req, res) => {
         franchiseId: driver.franchiseId,
         lastSeen: driver.lastSeen,
         createdAt: driver.createdAt,
-        updatedAt: driver.updatedAt
+        updatedAt: driver.updatedAt,
       },
       etoCard: etoCardData,
-      hasEtoCard: !!etoCard
+      hasEtoCard: !!etoCard,
     };
 
     return res
@@ -583,7 +590,6 @@ export const getDriverByIdAdmin = asyncHandler(async (req, res) => {
       .json(new ApiResponse(500, null, "Failed to retrieve driver"));
   }
 });
-
 
 export const getDriverByIdApp = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -2395,5 +2401,210 @@ export const updateOneSignalPlayerId = asyncHandler(async (req, res) => {
       success: false,
       message: "Failed to update OneSignal Player ID.",
     });
+  }
+});
+
+// Update Driver by ID Function (Admin only)
+export const updateDriverById = asyncHandler(async (req, res) => {
+  const { id } = req.params; // This is userId from the route
+  const { adminId } = req.body;
+
+  if (!id) {
+    return res
+      .status(400)
+      .json(new ApiResponse(400, null, "Driver ID is required"));
+  }
+
+  if (!adminId) {
+    return res
+      .status(403)
+      .json(new ApiResponse(403, null, "Admin ID is required for this operation"));
+  }
+
+  // Verify admin exists
+  const admin = await Admin.findById(adminId);
+  if (!admin) {
+    return res
+      .status(403)
+      .json(new ApiResponse(403, null, "Unauthorized: Admin not found"));
+  }
+
+  // Fields that should not be updated through this endpoint
+  const restrictedFields = [
+    'userId', 'phone', 'createdAt', 'updatedAt', 
+    '_id', 'franchiseId', 'isApproved', 'isActive'
+  ];
+  
+  // Remove restricted fields from update data
+  restrictedFields.forEach(field => {
+    delete req.body[field];
+  });
+
+  try {
+    // Find driver by userId (since id is userId from route)
+    const existingDriver = await Driver.findOne({ userId: id });
+    if (!existingDriver) {
+      return res
+        .status(404)
+        .json(new ApiResponse(404, null, "Driver not found"));
+    }
+
+    // Get the driver's _id for updates
+    const driverId = existingDriver._id;
+
+    // Validate email uniqueness if email is being updated
+    if (req.body.email && req.body.email !== existingDriver.email) {
+      const emailExists = await Driver.findOne({ 
+        email: req.body.email, 
+        _id: { $ne: driverId } // Compare with driverId, not userId
+      });
+      
+      if (emailExists) {
+        return res
+          .status(400)
+          .json(new ApiResponse(400, null, "Email already in use by another driver"));
+      }
+    }
+
+    // Handle current_location update
+    if (req.body.current_location) {
+      // Validate coordinates format
+      const { coordinates, type } = req.body.current_location;
+      
+      if (!coordinates || !Array.isArray(coordinates) || coordinates.length !== 2) {
+        return res
+          .status(400)
+          .json(new ApiResponse(400, null, "Invalid coordinates format. Must be [longitude, latitude]"));
+      }
+      
+      if (type !== 'Point') {
+        return res
+          .status(400)
+          .json(new ApiResponse(400, null, "Location type must be 'Point'"));
+      }
+      
+      // Validate latitude and longitude values
+      const [longitude, latitude] = coordinates;
+      if (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) {
+        return res
+          .status(400)
+          .json(new ApiResponse(400, null, "Invalid coordinates values"));
+      }
+    }
+
+    // Update driver using driverId (ObjectId)
+    const updatedDriver = await Driver.findByIdAndUpdate(
+      driverId, // Use driverId, not userId
+      { 
+        ...req.body,
+        updatedBy: adminId,
+        updatedAt: new Date()
+      },
+      { 
+        new: true, // Return updated document
+        runValidators: true // Run schema validators
+      }
+    ).populate('franchiseId', 'name email phone');
+
+    // Update corresponding ETO card if it exists and relevant fields are changed
+    const etoUpdateFields = {};
+    const fieldsToSyncWithETO = [
+      'name', 'email', 'village', 'police_station', 'landmark',
+      'post_office', 'district', 'pin_code', 'driver_photo', 'car_photo',
+      'license_number', 'toto_license_number'
+    ];
+
+    fieldsToSyncWithETO.forEach(field => {
+      if (req.body[field] !== undefined && req.body[field] !== existingDriver[field]) {
+        if (!etoUpdateFields.id_details) {
+          etoUpdateFields.id_details = {};
+        }
+        etoUpdateFields.id_details[field] = req.body[field];
+      }
+    });
+
+    // Update ETO card if there are changes
+    let etoCardUpdated = false;
+    if (Object.keys(etoUpdateFields).length > 0) {
+      await ETOCard.findOneAndUpdate(
+        { driverId: driverId }, // Use driverId
+        { $set: etoUpdateFields },
+        { new: true }
+      );
+      etoCardUpdated = true;
+    }
+
+    // Format response
+    const responseData = {
+      driver: {
+        _id: updatedDriver._id,
+        userId: updatedDriver.userId,
+        name: updatedDriver.name,
+        phone: updatedDriver.phone,
+        email: updatedDriver.email,
+        village: updatedDriver.village,
+        police_station: updatedDriver.police_station,
+        landmark: updatedDriver.landmark,
+        post_office: updatedDriver.post_office,
+        district: updatedDriver.district,
+        pin_code: updatedDriver.pin_code,
+        driver_photo: updatedDriver.driver_photo,
+        car_photo: updatedDriver.car_photo,
+        license_number: updatedDriver.license_number,
+        toto_license_number: updatedDriver.toto_license_number,
+        current_location: updatedDriver.current_location,
+        isActive: updatedDriver.isActive,
+        isApproved: updatedDriver.isApproved,
+        is_on_ride: updatedDriver.is_on_ride,
+        due_wallet: updatedDriver.due_wallet,
+        cash_wallet: updatedDriver.cash_wallet,
+        online_wallet: updatedDriver.online_wallet,
+        total_earning: updatedDriver.total_earning,
+        total_complete_rides: updatedDriver.total_complete_rides,
+        total_completed_km: updatedDriver.total_completed_km,
+        lastSeen: updatedDriver.lastSeen,
+        rejectionReason: updatedDriver.rejectionReason,
+        hasDueRequest: updatedDriver.hasDueRequest,
+        franchise: updatedDriver.franchiseId ? {
+          _id: updatedDriver.franchiseId._id,
+          name: updatedDriver.franchiseId.name,
+          email: updatedDriver.franchiseId.email,
+          phone: updatedDriver.franchiseId.phone
+        } : null,
+        updatedAt: updatedDriver.updatedAt
+      },
+      etoCardUpdated,
+      updatedBy: {
+        adminId: admin._id,
+        adminName: admin.name
+      }
+    };
+
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(200, responseData, "Driver updated successfully by admin")
+      );
+  } catch (error) {
+    console.error("Error updating driver:", error.message);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map(err => err.message);
+      return res
+        .status(400)
+        .json(new ApiResponse(400, null, `Validation error: ${errors.join(', ')}`));
+    }
+    
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res
+        .status(400)
+        .json(new ApiResponse(400, null, "Duplicate field value. Please use unique values."));
+    }
+    
+    return res
+      .status(500)
+      .json(new ApiResponse(500, null, "Failed to update driver"));
   }
 });

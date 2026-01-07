@@ -27,6 +27,7 @@ import {
   rejectDriverByDriverId,
   getDriverByIdApp,
   getDriverByIdAdmin,
+  updateDriverById,
 } from "../controllers/driver.controller.js";
 import { getETOCardById } from "../controllers/etoController.js";
 
@@ -63,5 +64,6 @@ router.route("/getWalletBalance/:userId").get(getWalletBalance);
 router.route("/admin/:id").get(getDriverByIdAdmin);
 router.route("/:id").get(getDriverByIdApp);
 router.delete("/deleteAccount/:driverId", deleteDriverAccount);
+router.route("/updateDriver/:id").put(updateDriverById);
 
 export default router;
