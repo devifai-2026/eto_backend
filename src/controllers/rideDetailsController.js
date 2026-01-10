@@ -13,272 +13,689 @@ import { ETOCard } from "../models/eto.model.js";
 import { FareSettings } from "../models/fareSettings.model.js";
 import { FranchiseCommissionSettings } from "../models/commissionSettings.model.js";
 import { Franchise } from "../models/franchise.model.js";
-
+import NodeCache from 'node-cache';
+import axios from 'axios';
 dotenv.config({
   path: "./env",
 });
 
-// Looking Drivers for Ride new functionality
-export const findAvailableDrivers = asyncHandler(async (req, res) => {
-  const { riderId, dropLocation, pickUpLocation, ride_start_time } = req.body;
-  console.log(req.body);
-  const proximityRadius = 5; // Search radius in kilometers
 
-  if (!riderId || !pickUpLocation || !dropLocation) {
-    return res
-      .status(400)
-      .json(
-        new ApiResponse(
-          400,
-          null,
-          "Rider ID, pickup, and drop locations are required"
-        )
-      );
-  }
+// Cache for Google Maps API calls (1 hour TTL)
+const distanceCache = new NodeCache({ stdTTL: 3600 });
 
+// Helper function: Calculate distance using Google Maps Directions API
+const calculateGoogleMapsDistance = async (origin, destination) => {
   try {
-    // 1. Get fare settings from FareSettings model
-    const fareSettings = await FareSettings.getSettings();
-    const baseFare = fareSettings.base_fare || 20;
-    const perKmCharge = fareSettings.per_km_charge || 8;
+    const cacheKey = `${origin.latitude},${origin.longitude}-${destination.latitude},${destination.longitude}`;
+    
+    // Check cache first
+    const cachedDistance = distanceCache.get(cacheKey);
+    if (cachedDistance !== undefined) {
+      console.log(`Using cached distance for: ${cacheKey}`);
+      return cachedDistance;
+    }
 
-    // Check for night surcharge
-    let nightSurchargeMultiplier = 1;
-    if (ride_start_time) {
-      const rideHour = new Date(ride_start_time).getHours();
-      const nightStart = fareSettings.night_start_hour || 22;
-      const nightEnd = fareSettings.night_end_hour || 6;
+    const response = await axios.get('https://maps.googleapis.com/maps/api/directions/json', {
+      params: {
+        origin: `${origin.latitude},${origin.longitude}`,
+        destination: `${destination.latitude},${destination.longitude}`,
+        mode: 'driving',
+        key: process.env.GOOGLE_MAPS_API_KEY,
+        alternatives: false,
+        units: 'metric'
+      },
+      timeout: 5000 // 5 second timeout
+    });
 
-      if (nightStart < nightEnd) {
-        // Normal case: night time doesn't cross midnight
-        if (rideHour >= nightStart && rideHour < nightEnd) {
-          nightSurchargeMultiplier =
-            1 + (fareSettings.night_surcharge_percentage || 20) / 100;
+    if (response.data.status === 'OK' && response.data.routes[0] && response.data.routes[0].legs[0]) {
+      const distanceMeters = response.data.routes[0].legs[0].distance.value;
+      const distanceKm = distanceMeters / 1000;
+      
+      // Cache the result
+      distanceCache.set(cacheKey, distanceKm);
+      console.log(`Google Maps distance calculated: ${distanceKm.toFixed(2)} km`);
+      return distanceKm;
+    } else {
+      console.warn('Google Directions API error:', response.data.status, response.data.error_message);
+      return null; // Return null to use fallback
+    }
+  } catch (error) {
+    console.error('Error calculating Google Maps distance:', error.message);
+    return null; // Return null to use fallback
+  }
+};
+
+// Helper function: Haversine formula fallback
+const calculateHaversineDistance = (origin, destination) => {
+  const toRadians = (degrees) => degrees * (Math.PI / 180);
+  const R = 6371; // Earth's radius in km
+
+  const lat1 = origin.latitude;
+  const lon1 = origin.longitude;
+  const lat2 = destination.latitude;
+  const lon2 = destination.longitude;
+
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const distance = R * c;
+  
+  console.log(`Haversine distance calculated: ${distance.toFixed(2)} km`);
+  return distance;
+};
+
+// Helper function: Check if it's night time
+const checkNightTime = (startHour, endHour) => {
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+  const currentTimeInHours = currentHour + (currentMinute / 60);
+  
+  if (startHour > endHour) {
+    // Night time spans across midnight (e.g., 22:00 to 6:00)
+    return currentTimeInHours >= startHour || currentTimeInHours < endHour;
+  } else {
+    return currentTimeInHours >= startHour && currentTimeInHours < endHour;
+  }
+};
+
+// Helper function: Calculate fare
+const calculateFare = (totalKm, fareSettings) => {
+  // Minimum distance charge for 1 km
+  const distanceKm = Math.max(totalKm, 1);
+  
+  // Base fare
+  let totalFare = fareSettings.base_fare;
+  
+  // Distance charge
+  const distanceCharge = distanceKm * fareSettings.per_km_charge;
+  totalFare += distanceCharge;
+  
+  // Check night time
+  const isNightTime = checkNightTime(
+    fareSettings.night_start_hour,
+    fareSettings.night_end_hour
+  );
+  
+  // Night surcharge
+  let nightSurcharge = 0;
+  if (isNightTime) {
+    nightSurcharge = (totalFare * fareSettings.night_surcharge_percentage) / 100;
+    totalFare += nightSurcharge;
+  }
+  
+  // Round to nearest integer
+  totalFare = Math.round(totalFare);
+  
+  console.log(`Fare calculation: Distance=${distanceKm.toFixed(2)}km, Base=${fareSettings.base_fare}, DistanceCharge=${distanceCharge.toFixed(2)}, Night=${isNightTime}, Surcharge=${nightSurcharge.toFixed(2)}, Total=${totalFare}`);
+  
+  return {
+    totalFare: totalFare,
+    fareBreakdown: {
+      baseFare: fareSettings.base_fare,
+      distanceCharge: Math.round(distanceCharge),
+      distanceKm: parseFloat(distanceKm.toFixed(2)),
+      isNightTime: isNightTime,
+      nightSurchargePercentage: isNightTime ? fareSettings.night_surcharge_percentage : 0,
+      nightSurchargeAmount: Math.round(nightSurcharge)
+    }
+  };
+};
+
+// Helper function: Calculate commissions
+const calculateCommissions = (totalFare, franchiseId, commissionSettings, driverFranchise) => {
+  let adminCommissionRate = 18; // Default admin commission
+  let franchiseCommissionRate = 0; // Default franchise commission
+  
+  // If driver has franchise
+  if (franchiseId && driverFranchise) {
+    // Check if custom commission settings exist for this franchise
+    if (commissionSettings) {
+      adminCommissionRate = commissionSettings.admin_commission_rate;
+      franchiseCommissionRate = commissionSettings.franchise_commission_rate;
+    } else {
+      // If franchise exists but no custom settings, use defaults
+      adminCommissionRate = 18;
+      franchiseCommissionRate = 10;
+    }
+  }
+  
+  // Calculate profits
+  const adminProfit = Math.round((totalFare * adminCommissionRate) / 100);
+  const franchiseProfit = Math.round((totalFare * franchiseCommissionRate) / 100);
+  const driverProfit = totalFare - adminProfit - franchiseProfit;
+  
+  // Ensure driver gets at least something
+  if (driverProfit < 0) {
+    console.warn(`Driver profit is negative: ${driverProfit}. Adjusting commissions.`);
+    // Adjust commissions to ensure driver gets minimum 50%
+    const adjustedDriverProfit = Math.round(totalFare * 0.5);
+    const remaining = totalFare - adjustedDriverProfit;
+    const adjustedAdminProfit = Math.round(remaining * (adminCommissionRate / (adminCommissionRate + franchiseCommissionRate)));
+    const adjustedFranchiseProfit = remaining - adjustedAdminProfit;
+    
+    return {
+      adminCommissionRate: adminCommissionRate,
+      franchiseCommissionRate: franchiseCommissionRate,
+      adminProfit: adjustedAdminProfit,
+      franchiseProfit: adjustedFranchiseProfit,
+      driverProfit: adjustedDriverProfit
+    };
+  }
+  
+  return {
+    adminCommissionRate: adminCommissionRate,
+    franchiseCommissionRate: franchiseCommissionRate,
+    adminProfit: adminProfit,
+    franchiseProfit: franchiseProfit,
+    driverProfit: driverProfit
+  };
+};
+
+// Main function: Find available drivers
+export const findAvailableDrivers = async (req, res) => {
+  try {
+    const { pickUpLocation, dropLocation, riderId, ride_start_time } = req.body;
+    
+    console.log('findAvailableDrivers request received:', {
+      pickUpLocation,
+      dropLocation,
+      riderId,
+      ride_start_time
+    });
+    
+    // Validate required parameters
+    if (!pickUpLocation || !pickUpLocation.latitude || !pickUpLocation.longitude) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Valid pickUpLocation with latitude and longitude is required" 
+      });
+    }
+    
+    if (!dropLocation || !dropLocation.latitude || !dropLocation.longitude) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Valid dropLocation with latitude and longitude is required" 
+      });
+    }
+    
+    if (!riderId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "riderId is required" 
+      });
+    }
+    
+    // Step 1: Calculate accurate distance using Google Maps
+    console.log('Calculating distance using Google Maps API...');
+    let totalKm = await calculateGoogleMapsDistance(pickUpLocation, dropLocation);
+    
+    // Step 2: If Google Maps fails, use Haversine as fallback
+    if (totalKm === null || totalKm === undefined) {
+      console.log('Google Maps API failed, using Haversine formula...');
+      totalKm = calculateHaversineDistance(pickUpLocation, dropLocation);
+    }
+    
+    // Ensure we have a valid distance
+    if (!totalKm || totalKm <= 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Could not calculate valid distance between locations" 
+      });
+    }
+    
+    console.log(`Final distance calculated: ${totalKm.toFixed(2)} km`);
+    
+    // Step 3: Get fare settings
+    const fareSettings = await FareSettings.findOne();
+    if (!fareSettings) {
+      return res.status(500).json({ 
+        success: false, 
+        message: "Fare settings not configured" 
+      });
+    }
+    
+    console.log('Fare settings:', fareSettings);
+    
+    // Step 4: Calculate fare
+    const fareResult = calculateFare(totalKm, fareSettings);
+    const totalFare = fareResult.totalFare;
+    const fareBreakdown = fareResult.fareBreakdown;
+    
+    // Step 5: Find available drivers within 5km radius
+    console.log('Searching for available drivers within 5km radius...');
+    
+    const availableDrivers = await Driver.aggregate([
+      {
+        $geoNear: {
+          near: {
+            type: "Point",
+            coordinates: [pickUpLocation.longitude, pickUpLocation.latitude]
+          },
+          distanceField: "distance",
+          spherical: true,
+          maxDistance: 5000, // 5km in meters
+          distanceMultiplier: 0.001, // Convert meters to kilometers
+          query: {
+            isActive: true,
+            isApproved: true,
+            is_on_ride: false
+          }
         }
-      } else {
-        // Night time crosses midnight (e.g., 10 PM to 6 AM)
-        if (rideHour >= nightStart || rideHour < nightEnd) {
-          nightSurchargeMultiplier =
-            1 + (fareSettings.night_surcharge_percentage || 20) / 100;
+      },
+      {
+        $limit: 10 // Limit to 10 drivers for performance
+      },
+      {
+        $lookup: {
+          from: "franchises",
+          localField: "franchiseId",
+          foreignField: "_id",
+          as: "franchiseInfo"
+        }
+      },
+      {
+        $unwind: {
+          path: "$franchiseInfo",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $lookup: {
+          from: "franchisecommissionsettings",
+          localField: "franchiseId",
+          foreignField: "franchiseId",
+          as: "commissionSettings"
+        }
+      },
+      {
+        $unwind: {
+          path: "$commissionSettings",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          name: 1,
+          phone: 1,
+          driver_photo: 1,
+          current_location: 1,
+          distance: 1,
+          franchiseId: 1,
+          franchiseInfo: {
+            name: 1,
+            _id: 1
+          },
+          commissionSettings: 1
         }
       }
-    }
-
-    const rider = await Rider.findById(riderId);
-    if (!rider) {
-      return res
-        .status(404)
-        .json(new ApiResponse(404, null, "Rider not found"));
-    }
-
-    const pickupCoordinates = [
-      pickUpLocation.longitude,
-      pickUpLocation.latitude,
-    ];
-
-    // Find available drivers with their franchise info
-    const availableDrivers = await Driver.find({
-      current_location: {
-        $near: {
-          $geometry: { type: "Point", coordinates: pickupCoordinates },
-          $maxDistance: proximityRadius * 1000, // Convert km to meters
+    ]);
+    
+    console.log(`Found ${availableDrivers.length} available drivers`);
+    
+    // Step 6: Prepare driver data with fares and commissions
+    const driversWithFares = availableDrivers.map(driver => {
+      // Calculate driver's distance to pickup in km
+      const driverDistanceKm = driver.distance || 0;
+      
+      // Format distance to pickup
+      let distanceToPickup = '';
+      if (driverDistanceKm < 1) {
+        // Show in meters if less than 1 km
+        const distanceMeters = Math.round(driverDistanceKm * 1000);
+        distanceToPickup = `${distanceMeters} m`;
+      } else {
+        distanceToPickup = `${driverDistanceKm.toFixed(2)} km`;
+      }
+      
+      // Calculate estimated time to pickup (assuming average speed of 20 km/h)
+      const estimatedTimeMinutes = Math.round((driverDistanceKm / 20) * 60);
+      const estimatedTimeToPickup = `${Math.max(1, estimatedTimeMinutes)} mins`;
+      
+      // Calculate commissions for this driver
+      const commissionResult = calculateCommissions(
+        totalFare,
+        driver.franchiseId,
+        driver.commissionSettings,
+        driver.franchiseInfo
+      );
+      
+      return {
+        driverId: driver._id,
+        location: driver.current_location?.coordinates || [],
+        name: driver.name,
+        phone: driver.phone,
+        driver_photo: driver.driver_photo || null,
+        hasFranchise: !!driver.franchiseId,
+        franchiseId: driver.franchiseId || null,
+        franchiseName: driver.franchiseInfo?.name || null,
+        distanceToPickup: distanceToPickup,
+        estimatedTimeToPickup: estimatedTimeToPickup,
+        fareBreakdown: fareBreakdown,
+        totalPrice: totalFare,
+        commissionBreakdown: {
+          adminCommissionRate: commissionResult.adminCommissionRate,
+          franchiseCommissionRate: commissionResult.franchiseCommissionRate,
+          adminProfit: commissionResult.adminProfit,
+          franchiseProfit: commissionResult.franchiseProfit,
+          driverProfit: commissionResult.driverProfit
         },
-      },
-      isActive: true,
-      is_on_ride: false,
-      due_wallet: { $lt: 500 },
-    }).populate("franchiseId");
-
-    if (availableDrivers.length === 0) {
-      return res
-        .status(200)
-        .json(
-          new ApiResponse(
-            200,
-            { isAvailable: false },
-            "No available drivers found"
-          )
-        );
-    }
-
-    // Calculate total distance from pickup to drop
-    const totalKmPickupToDrop =
-      geolib.getDistance(
-        {
-          latitude: pickUpLocation.latitude,
-          longitude: pickUpLocation.longitude,
+        adminPercentage: commissionResult.adminCommissionRate,
+        adminProfit: commissionResult.adminProfit,
+        franchisePercentage: commissionResult.franchiseCommissionRate,
+        franchiseProfit: commissionResult.franchiseProfit,
+        driverProfit: commissionResult.driverProfit
+      };
+    });
+    
+    // Step 7: Prepare response
+    const response = {
+      success: true,
+      data: {
+        availableDrivers: driversWithFares,
+        fareSettings: {
+          base_fare: fareSettings.base_fare,
+          per_km_charge: fareSettings.per_km_charge,
+          night_surcharge_percentage: fareSettings.night_surcharge_percentage,
+          night_start_hour: fareSettings.night_start_hour,
+          night_end_hour: fareSettings.night_end_hour,
+          night_hours: `${fareSettings.night_start_hour.toString().padStart(2, '0')}:00 - ${fareSettings.night_end_hour.toString().padStart(2, '0')}:00`
         },
-        { latitude: dropLocation.latitude, longitude: dropLocation.longitude }
-      ) / 1000; // Convert meters to kilometers
-
-    // Get franchise commission settings for all franchises
-    const franchiseIds = availableDrivers
-      .filter(
-        (d) =>
-          d.franchiseId && d.franchiseId.isActive && d.franchiseId.isApproved
-      )
-      .map((d) => d.franchiseId._id);
-
-    let franchiseCommissionSettings = {};
-    if (franchiseIds.length > 0) {
-      const settings = await FranchiseCommissionSettings.find({
-        franchiseId: { $in: franchiseIds },
-        isActive: true,
-      });
-
-      settings.forEach((setting) => {
-        franchiseCommissionSettings[setting.franchiseId.toString()] = setting;
-      });
-    }
-
-    // ---- Speed Settings ----
-    const minSpeed = 18; // km/h (worst case in traffic)
-    const maxSpeed = 30; // km/h (best case in traffic)
-
-    // Prepare response data for each available driver
-    const resData = await Promise.all(
-      availableDrivers.map(async (driver) => {
-        // Distance from driver's current location to pickup
-        const driverDistanceToPickup =
-          geolib.getDistance(
-            {
-              latitude: driver.current_location.coordinates[1],
-              longitude: driver.current_location.coordinates[0],
-            },
-            {
-              latitude: pickUpLocation.latitude,
-              longitude: pickUpLocation.longitude,
-            }
-          ) / 1000; // Convert meters to kilometers
-
-        // Total distance for pricing (driver -> pickup + pickup -> drop)
-        const totalDistance = driverDistanceToPickup + totalKmPickupToDrop;
-
-        // Fare Calculation with night surcharge
-        const baseFareAmount = baseFare;
-        const distanceCharge = totalDistance * perKmCharge;
-        let totalPrice = Math.ceil(baseFareAmount + distanceCharge);
-
-        // Apply night surcharge if applicable
-        totalPrice = Math.ceil(totalPrice * nightSurchargeMultiplier);
-
-        // Check if driver belongs to an active franchise
-        let adminCommissionRate = 18; // Default admin commission
-        let franchiseCommissionRate = 0;
-        let franchiseId = null;
-        let franchiseName = null;
-        let adminProfit = 0;
-        let franchiseProfit = 0;
-        let driverProfit = 0;
-        let hasFranchise = false;
-
-        if (
-          driver.franchiseId &&
-          driver.franchiseId.isActive &&
-          driver.franchiseId.isApproved
-        ) {
-          // Driver belongs to a franchise
-          hasFranchise = true;
-          franchiseId = driver.franchiseId._id;
-          franchiseName = driver.franchiseId.name;
-
-          // Get commission settings for this franchise
-          const commissionSettings =
-            franchiseCommissionSettings[franchiseId.toString()];
-
-          if (commissionSettings) {
-            adminCommissionRate = commissionSettings.admin_commission_rate;
-            franchiseCommissionRate =
-              commissionSettings.franchise_commission_rate;
-          } else {
-            // Use default franchise commission
-            franchiseCommissionRate = 10; // Default franchise commission
-          }
-
-          // Calculate profits with franchise commission
-          franchiseProfit = Math.ceil(
-            (franchiseCommissionRate / 100) * totalPrice
-          );
-          adminProfit = Math.ceil((adminCommissionRate / 100) * totalPrice);
-          driverProfit = Math.ceil(totalPrice - franchiseProfit - adminProfit);
-        } else {
-          // Driver does not belong to any franchise
-          adminProfit = Math.ceil((adminCommissionRate / 100) * totalPrice);
-          driverProfit = Math.ceil(totalPrice - adminProfit);
-        }
-
-        // ETA Calculation (range)
-        const minTimeToPickup = (driverDistanceToPickup / maxSpeed) * 60; // minutes
-        const maxTimeToPickup = (driverDistanceToPickup / minSpeed) * 60; // minutes
-
-        return {
-          driverId: driver._id,
-          location: driver.current_location.coordinates,
-          name: driver.name,
-          phone: driver.phone,
-          driver_photo: driver.driver_photo,
-          hasFranchise: hasFranchise,
-          franchiseId: franchiseId,
-          franchiseName: franchiseName,
-          distanceToPickup: driverDistanceToPickup.toFixed(2) + " km",
-          estimatedTimeToPickup: `${minTimeToPickup.toFixed(
-            2
-          )} - ${maxTimeToPickup.toFixed(2)} mins`, // ETA Range
-          fareBreakdown: {
-            baseFare: baseFareAmount,
-            totalDistance: totalDistance.toFixed(2),
-            perKmCharge: perKmCharge,
-            distanceCharge: Math.ceil(distanceCharge),
-            nightSurchargeMultiplier: nightSurchargeMultiplier,
-            isNightTime: nightSurchargeMultiplier > 1,
-            nightSurchargePercentage:
-              nightSurchargeMultiplier > 1
-                ? fareSettings.night_surcharge_percentage || 20
-                : 0,
-          },
-          totalPrice: totalPrice,
-          commissionBreakdown: {
-            adminCommissionRate: adminCommissionRate,
-            franchiseCommissionRate: franchiseCommissionRate,
-            adminProfit: adminProfit,
-            franchiseProfit: franchiseProfit,
-            driverProfit: driverProfit,
-          },
-          // Legacy fields for backward compatibility
-          adminPercentage: adminCommissionRate,
-          adminProfit: adminProfit,
-          franchisePercentage: franchiseCommissionRate,
-          franchiseProfit: franchiseProfit,
-          driverProfit: driverProfit,
-        };
-      })
-    );
-
-    const finalResData = {
-      availableDrivers: resData,
-      fareSettings: {
-        base_fare: baseFare,
-        per_km_charge: perKmCharge,
-        night_surcharge_percentage:
-          fareSettings.night_surcharge_percentage || 20,
-        night_hours: `${fareSettings.night_start_hour || 22}:00 - ${fareSettings.night_end_hour || 6}:00`,
-      },
-      totalKmPickupToDrop: totalKmPickupToDrop.toFixed(2) + " km",
-      isAvailable: true,
+        totalKmPickupToDrop: `${totalKm.toFixed(2)} km`,
+        totalKmValue: parseFloat(totalKm.toFixed(2)),
+        totalFare: totalFare,
+        isAvailable: driversWithFares.length > 0,
+        timestamp: new Date().toISOString()
+      }
     };
-
-    console.log(finalResData);
-
-    return res
-      .status(200)
-      .json(new ApiResponse(200, finalResData, "Drivers found successfully"));
+    
+    console.log('findAvailableDrivers response prepared:', {
+      totalDrivers: driversWithFares.length,
+      totalKm: `${totalKm.toFixed(2)} km`,
+      totalFare: totalFare,
+      isAvailable: driversWithFares.length > 0
+    });
+    
+    return res.status(200).json(response);
+    
   } catch (error) {
-    console.error("Error finding available drivers:", error.message);
-    return res
-      .status(500)
-      .json(new ApiResponse(500, null, "Failed to find available drivers"));
+    console.error("Error in findAvailableDrivers:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Internal server error",
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
-});
+};
+
+// Looking Drivers for Ride new functionality
+// export const findAvailableDrivers = asyncHandler(async (req, res) => {
+//   const { riderId, dropLocation, pickUpLocation, ride_start_time } = req.body;
+//   console.log(req.body);
+//   const proximityRadius = 5; // Search radius in kilometers
+
+//   if (!riderId || !pickUpLocation || !dropLocation) {
+//     return res
+//       .status(400)
+//       .json(
+//         new ApiResponse(
+//           400,
+//           null,
+//           "Rider ID, pickup, and drop locations are required"
+//         )
+//       );
+//   }
+
+//   try {
+//     // 1. Get fare settings from FareSettings model
+//     const fareSettings = await FareSettings.getSettings();
+//     const baseFare = fareSettings.base_fare || 20;
+//     const perKmCharge = fareSettings.per_km_charge || 8;
+
+//     // Check for night surcharge
+//     let nightSurchargeMultiplier = 1;
+//     if (ride_start_time) {
+//       const rideHour = new Date(ride_start_time).getHours();
+//       const nightStart = fareSettings.night_start_hour || 22;
+//       const nightEnd = fareSettings.night_end_hour || 6;
+
+//       if (nightStart < nightEnd) {
+//         // Normal case: night time doesn't cross midnight
+//         if (rideHour >= nightStart && rideHour < nightEnd) {
+//           nightSurchargeMultiplier =
+//             1 + (fareSettings.night_surcharge_percentage || 20) / 100;
+//         }
+//       } else {
+//         // Night time crosses midnight (e.g., 10 PM to 6 AM)
+//         if (rideHour >= nightStart || rideHour < nightEnd) {
+//           nightSurchargeMultiplier =
+//             1 + (fareSettings.night_surcharge_percentage || 20) / 100;
+//         }
+//       }
+//     }
+
+//     const rider = await Rider.findById(riderId);
+//     if (!rider) {
+//       return res
+//         .status(404)
+//         .json(new ApiResponse(404, null, "Rider not found"));
+//     }
+
+//     const pickupCoordinates = [
+//       pickUpLocation.longitude,
+//       pickUpLocation.latitude,
+//     ];
+
+//     // Find available drivers with their franchise info
+//     const availableDrivers = await Driver.find({
+//       current_location: {
+//         $near: {
+//           $geometry: { type: "Point", coordinates: pickupCoordinates },
+//           $maxDistance: proximityRadius * 1000, // Convert km to meters
+//         },
+//       },
+//       isActive: true,
+//       is_on_ride: false,
+//       due_wallet: { $lt: 500 },
+//     }).populate("franchiseId");
+
+//     if (availableDrivers.length === 0) {
+//       return res
+//         .status(200)
+//         .json(
+//           new ApiResponse(
+//             200,
+//             { isAvailable: false },
+//             "No available drivers found"
+//           )
+//         );
+//     }
+
+//     // Calculate total distance from pickup to drop
+//     const totalKmPickupToDrop =
+//       geolib.getDistance(
+//         {
+//           latitude: pickUpLocation.latitude,
+//           longitude: pickUpLocation.longitude,
+//         },
+//         { latitude: dropLocation.latitude, longitude: dropLocation.longitude }
+//       ) / 1000; // Convert meters to kilometers
+
+//     // Get franchise commission settings for all franchises
+//     const franchiseIds = availableDrivers
+//       .filter(
+//         (d) =>
+//           d.franchiseId && d.franchiseId.isActive && d.franchiseId.isApproved
+//       )
+//       .map((d) => d.franchiseId._id);
+
+//     let franchiseCommissionSettings = {};
+//     if (franchiseIds.length > 0) {
+//       const settings = await FranchiseCommissionSettings.find({
+//         franchiseId: { $in: franchiseIds },
+//         isActive: true,
+//       });
+
+//       settings.forEach((setting) => {
+//         franchiseCommissionSettings[setting.franchiseId.toString()] = setting;
+//       });
+//     }
+
+//     // ---- Speed Settings ----
+//     const minSpeed = 18; // km/h (worst case in traffic)
+//     const maxSpeed = 30; // km/h (best case in traffic)
+
+//     // Prepare response data for each available driver
+//     const resData = await Promise.all(
+//       availableDrivers.map(async (driver) => {
+//         // Distance from driver's current location to pickup
+//         const driverDistanceToPickup =
+//           geolib.getDistance(
+//             {
+//               latitude: driver.current_location.coordinates[1],
+//               longitude: driver.current_location.coordinates[0],
+//             },
+//             {
+//               latitude: pickUpLocation.latitude,
+//               longitude: pickUpLocation.longitude,
+//             }
+//           ) / 1000; // Convert meters to kilometers
+
+//         // Total distance for pricing (driver -> pickup + pickup -> drop)
+//         const totalDistance = driverDistanceToPickup + totalKmPickupToDrop;
+
+//         // Fare Calculation with night surcharge
+//         const baseFareAmount = baseFare;
+//         const distanceCharge = totalDistance * perKmCharge;
+//         let totalPrice = Math.ceil(baseFareAmount + distanceCharge);
+
+//         // Apply night surcharge if applicable
+//         totalPrice = Math.ceil(totalPrice * nightSurchargeMultiplier);
+
+//         // Check if driver belongs to an active franchise
+//         let adminCommissionRate = 18; // Default admin commission
+//         let franchiseCommissionRate = 0;
+//         let franchiseId = null;
+//         let franchiseName = null;
+//         let adminProfit = 0;
+//         let franchiseProfit = 0;
+//         let driverProfit = 0;
+//         let hasFranchise = false;
+
+//         if (
+//           driver.franchiseId &&
+//           driver.franchiseId.isActive &&
+//           driver.franchiseId.isApproved
+//         ) {
+//           // Driver belongs to a franchise
+//           hasFranchise = true;
+//           franchiseId = driver.franchiseId._id;
+//           franchiseName = driver.franchiseId.name;
+
+//           // Get commission settings for this franchise
+//           const commissionSettings =
+//             franchiseCommissionSettings[franchiseId.toString()];
+
+//           if (commissionSettings) {
+//             adminCommissionRate = commissionSettings.admin_commission_rate;
+//             franchiseCommissionRate =
+//               commissionSettings.franchise_commission_rate;
+//           } else {
+//             // Use default franchise commission
+//             franchiseCommissionRate = 10; // Default franchise commission
+//           }
+
+//           // Calculate profits with franchise commission
+//           franchiseProfit = Math.ceil(
+//             (franchiseCommissionRate / 100) * totalPrice
+//           );
+//           adminProfit = Math.ceil((adminCommissionRate / 100) * totalPrice);
+//           driverProfit = Math.ceil(totalPrice - franchiseProfit - adminProfit);
+//         } else {
+//           // Driver does not belong to any franchise
+//           adminProfit = Math.ceil((adminCommissionRate / 100) * totalPrice);
+//           driverProfit = Math.ceil(totalPrice - adminProfit);
+//         }
+
+//         // ETA Calculation (range)
+//         const minTimeToPickup = (driverDistanceToPickup / maxSpeed) * 60; // minutes
+//         const maxTimeToPickup = (driverDistanceToPickup / minSpeed) * 60; // minutes
+
+//         return {
+//           driverId: driver._id,
+//           location: driver.current_location.coordinates,
+//           name: driver.name,
+//           phone: driver.phone,
+//           driver_photo: driver.driver_photo,
+//           hasFranchise: hasFranchise,
+//           franchiseId: franchiseId,
+//           franchiseName: franchiseName,
+//           distanceToPickup: driverDistanceToPickup.toFixed(2) + " km",
+//           estimatedTimeToPickup: `${minTimeToPickup.toFixed(
+//             2
+//           )} - ${maxTimeToPickup.toFixed(2)} mins`, // ETA Range
+//           fareBreakdown: {
+//             baseFare: baseFareAmount,
+//             totalDistance: totalDistance.toFixed(2),
+//             perKmCharge: perKmCharge,
+//             distanceCharge: Math.ceil(distanceCharge),
+//             nightSurchargeMultiplier: nightSurchargeMultiplier,
+//             isNightTime: nightSurchargeMultiplier > 1,
+//             nightSurchargePercentage:
+//               nightSurchargeMultiplier > 1
+//                 ? fareSettings.night_surcharge_percentage || 20
+//                 : 0,
+//           },
+//           totalPrice: totalPrice,
+//           commissionBreakdown: {
+//             adminCommissionRate: adminCommissionRate,
+//             franchiseCommissionRate: franchiseCommissionRate,
+//             adminProfit: adminProfit,
+//             franchiseProfit: franchiseProfit,
+//             driverProfit: driverProfit,
+//           },
+//           // Legacy fields for backward compatibility
+//           adminPercentage: adminCommissionRate,
+//           adminProfit: adminProfit,
+//           franchisePercentage: franchiseCommissionRate,
+//           franchiseProfit: franchiseProfit,
+//           driverProfit: driverProfit,
+//         };
+//       })
+//     );
+
+//     const finalResData = {
+//       availableDrivers: resData,
+//       fareSettings: {
+//         base_fare: baseFare,
+//         per_km_charge: perKmCharge,
+//         night_surcharge_percentage:
+//           fareSettings.night_surcharge_percentage || 20,
+//         night_hours: `${fareSettings.night_start_hour || 22}:00 - ${fareSettings.night_end_hour || 6}:00`,
+//       },
+//       totalKmPickupToDrop: totalKmPickupToDrop.toFixed(2) + " km",
+//       isAvailable: true,
+//     };
+
+//     console.log(finalResData);
+
+//     return res
+//       .status(200)
+//       .json(new ApiResponse(200, finalResData, "Drivers found successfully"));
+//   } catch (error) {
+//     console.error("Error finding available drivers:", error.message);
+//     return res
+//       .status(500)
+//       .json(new ApiResponse(500, null, "Failed to find available drivers"));
+//   }
+// });
 
 // Accept Ride request new api - Modified for franchise support
 export const acceptRide = (io) =>
