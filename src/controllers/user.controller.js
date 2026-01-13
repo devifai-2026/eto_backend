@@ -78,7 +78,7 @@ export const loginAndSendOtp = asyncHandler(async (req, res) => {
       "9830880062",
       "1234567890",
       "7872358975",
-      "8768933999",
+      "2348933994",
       "9732745858",
     ];
 
@@ -609,7 +609,7 @@ export const verifyOtp = asyncHandler(async (req, res) => {
         code: "1234",
         role: "passenger",
       },
-      8768933999: {
+      2348933994: {
         // Rider bypass
         verificationId: "1234567",
         code: "1234",
